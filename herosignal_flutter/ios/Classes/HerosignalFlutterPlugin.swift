@@ -82,6 +82,11 @@ public class HerosignalFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHand
             Task { let p = await HeroSignal.Notifications.permission(); DispatchQueue.main.async { result(p == .authorized || p == .provisional) } }
         case "requestPermission":
             HeroSignal.Notifications.requestPermission { granted in DispatchQueue.main.async { result(granted) } }
+        // Bildirim merkezi: tümünü temizle (rozet dahil) ve thread-id ile grup kaldırma. Tekil kaldırma Android
+        // bildirim kimliği ister; iOS'ta karşılığı olmadığından çağrı etkisiz tamamlanır (eski sağlayıcı ile aynı).
+        case "clearAll": HeroSignal.Notifications.clearAll(); result(nil)
+        case "removeGroupedNotifications": HeroSignal.Notifications.removeGroupedNotifications(args["group"] as? String ?? ""); result(nil)
+        case "removeNotification": result(nil)
         case "sendEvent":
             HeroSignal.Session.sendEvent(args["name"] as? String ?? "", properties: args["properties"] as? [String: Any] ?? [:], value: args["value"] as? Double)
             result(nil)

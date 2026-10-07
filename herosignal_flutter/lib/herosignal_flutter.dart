@@ -185,6 +185,17 @@ class _Notifications {
 
   Future<bool> get permission async => (await HeroSignal._channel.invokeMethod<bool>('getPermission')) ?? false;
 
+  /// Tepsideki/bildirim merkezindeki tüm HeroSignal bildirimlerini kaldırır ve rozeti sıfırlar.
+  Future<void> clearAll() => HeroSignal._channel.invokeMethod<void>('clearAll');
+
+  /// Yalnızca Android: tek bir bildirimi [HeroSignalNotification.androidNotificationId] ile kaldırır (iOS'ta etkisiz).
+  Future<void> removeNotification(int androidNotificationId) =>
+      HeroSignal._channel.invokeMethod<void>('removeNotification', {'id': androidNotificationId});
+
+  /// Aynı grup anahtarına sahip bildirimleri kaldırır (Android `android_group`, iOS `thread-id`).
+  Future<void> removeGroupedNotifications(String group) =>
+      HeroSignal._channel.invokeMethod<void>('removeGroupedNotifications', {'group': group});
+
   /// Bildirim/düğme tıklamaları.
   Stream<HeroSignalClickEvent> get clickStream =>
       HeroSignal._rawEvents.where((e) => e['type'] == 'click').map(HeroSignalClickEvent.fromMap);

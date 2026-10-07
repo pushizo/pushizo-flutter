@@ -105,6 +105,18 @@ void main() {
     });
   });
 
+  test('bildirim tepsisi çağrıları platforma iletilir', () async {
+    await HeroSignal.Notifications.clearAll();
+    await HeroSignal.Notifications.removeNotification(42);
+    await HeroSignal.Notifications.removeGroupedNotifications('orders');
+    expect(calls.map((c) => c.method).toList(), ['clearAll', 'removeNotification', 'removeGroupedNotifications']);
+    expect(calls[1].arguments, {'id': 42});
+    expect(calls[2].arguments, {'group': 'orders'});
+    final n = HeroSignalNotification.fromMap({'title': 'T', 'androidNotificationId': 7});
+    expect(n.androidNotificationId, 7);
+    expect(HeroSignalNotification.fromMap({'title': 'T'}).androidNotificationId, isNull);
+  });
+
   test('modeller haritadan oluşur', () {
     final click = HeroSignalClickEvent.fromMap({
       'notification': {'title': 'T', 'body': 'B', 'url': 'myapp://x', 'deliveryId': 'dlv_1', 'data': {'k': 'v'}},

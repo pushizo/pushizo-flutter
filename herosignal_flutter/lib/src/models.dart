@@ -22,7 +22,7 @@ class HeroSignalPushSubscriptionState {
 
 /// Bildirim içeriği.
 class HeroSignalNotification {
-  const HeroSignalNotification({this.title, this.body, this.url, this.deliveryId, this.messageId, this.data = const {}});
+  const HeroSignalNotification({this.title, this.body, this.url, this.deliveryId, this.messageId, this.data = const {}, this.androidNotificationId});
 
   final String? title;
   final String? body;
@@ -31,6 +31,9 @@ class HeroSignalNotification {
   final String? messageId;
   final Map<String, String> data;
 
+  /// Android tepsi kimliği ([HeroSignal.Notifications.removeNotification] için); iOS'ta null.
+  final int? androidNotificationId;
+
   factory HeroSignalNotification.fromMap(Map<Object?, Object?> map) => HeroSignalNotification(
         title: map['title'] as String?,
         body: map['body'] as String?,
@@ -38,6 +41,7 @@ class HeroSignalNotification {
         deliveryId: map['deliveryId'] as String?,
         messageId: map['messageId'] as String?,
         data: (map['data'] as Map?)?.map((k, v) => MapEntry(k.toString(), v.toString())) ?? const {},
+        androidNotificationId: map['androidNotificationId'] as int?,
       );
 }
 
