@@ -62,6 +62,9 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
     }
     private val subscriptionObserver: (HsPushSubscriptionState) -> Unit = { s -> emit(mapOf("type" to "subscription", "state" to s.toMap())) }
 
+    /** Yerel SDK izin gözlemcisi → Dart `permissionStream` / `addPermissionObserver`. */
+    private val permissionObserver: (Boolean) -> Unit = { granted -> emit(mapOf("type" to "permission", "permission" to granted)) }
+
     private val inAppClickListener: (HsInAppClickEvent) -> Unit = { e ->
         emit(mapOf("type" to "inAppClick", "messageId" to e.messageId, "actionId" to e.actionId, "url" to e.url))
     }
@@ -107,6 +110,7 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
         HeroSignal.Notifications.removeClickListener(clickListener)
         HeroSignal.Notifications.removeForegroundLifecycleListener(foregroundListener)
         HeroSignal.User.pushSubscription.removeObserver(subscriptionObserver)
+        HeroSignal.Notifications.removePermissionObserver(permissionObserver)
         HeroSignal.InAppMessages.removeClickListener(inAppClickListener)
         HeroSignal.InAppMessages.removeLifecycleListener(inAppLifecycleListener)
         HeroSignal.InAppMessages.setRenderer(null)
@@ -131,6 +135,7 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
                     HeroSignal.Notifications.addClickListener(clickListener)
                     HeroSignal.Notifications.addForegroundLifecycleListener(foregroundListener)
                     HeroSignal.User.pushSubscription.addObserver(subscriptionObserver)
+                    HeroSignal.Notifications.addPermissionObserver(permissionObserver)
                     HeroSignal.InAppMessages.addClickListener(inAppClickListener)
                     HeroSignal.InAppMessages.addLifecycleListener(inAppLifecycleListener)
                     HeroSignal.InAppMessages.setRenderer(inAppRenderer)

@@ -117,6 +117,37 @@ void main() {
     expect(HeroSignalNotification.fromMap({'title': 'T'}).androidNotificationId, isNull);
   });
 
+  test('izin değişiklikleri akışa ve gözlemcilere iletilir', () async {
+    MockStreamHandlerEventSink? sink;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockStreamHandler(
+      const EventChannel('herosignal_flutter/events'),
+      MockStreamHandler.inline(onListen: (arguments, events) => sink = events),
+    );
+    final streamed = <bool>[];
+    final seen = <bool>[];
+    final HeroSignalPermissionObserver observer = (granted) {
+      seen.add(granted);
+    };
+    final subscription = HeroSignal.Notifications.permissionStream.listen(streamed.add);
+    HeroSignal.Notifications.addPermissionObserver(observer);
+    HeroSignal.Notifications.addPermissionObserver(observer);
+    await pumpEventQueue();
+
+    sink!.success({'type': 'subscription', 'state': {'id': 'sub_1', 'optedIn': true, 'permission': true}});
+    sink!.success({'type': 'permission', 'permission': true});
+    sink!.success({'type': 'permission', 'permission': false});
+    await pumpEventQueue();
+    expect(streamed, [true, false]);
+    expect(seen, [true, false], reason: 'aynı gözlemci bir kez eklenir');
+
+    HeroSignal.Notifications.removePermissionObserver(observer);
+    sink!.success({'type': 'permission', 'permission': true});
+    await pumpEventQueue();
+    expect(seen, [true, false]);
+    expect(streamed, [true, false, true]);
+    await subscription.cancel();
+  });
+
   test('modeller haritadan oluşur', () {
     final click = HeroSignalClickEvent.fromMap({
       'notification': {'title': 'T', 'body': 'B', 'url': 'myapp://x', 'deliveryId': 'dlv_1', 'data': {'k': 'v'}},

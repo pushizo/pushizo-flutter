@@ -54,6 +54,10 @@ public class HerosignalFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHand
                 HeroSignal.User.pushSubscription.addObserver { [weak self] s in
                     self?.emit(["type": "subscription", "state": Self.map(s)])
                 }
+                // Yerel SDK izin gözlemcisi → Dart `permissionStream` / `addPermissionObserver`.
+                HeroSignal.Notifications.addPermissionObserver { [weak self] granted in
+                    self?.emit(["type": "permission", "permission": granted])
+                }
                 HeroSignal.InAppMessages.addClickListener { [weak self] e in
                     self?.emit(["type": "inAppClick", "messageId": e.messageId, "actionId": e.actionId, "url": e.url as Any])
                 }

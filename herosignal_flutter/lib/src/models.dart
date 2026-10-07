@@ -45,6 +45,9 @@ class HeroSignalNotification {
       );
 }
 
+/// İzin gözlemcisi: `granted` yeni etkin bildirim izni durumudur.
+typedef HeroSignalPermissionObserver = void Function(bool granted);
+
 /// Ön plan gösterim kararı işleyicisi.
 typedef HeroSignalForegroundWillDisplayHandler = FutureOr<void> Function(HeroSignalForegroundEvent event);
 

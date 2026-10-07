@@ -6,6 +6,7 @@
 /// await HeroSignal.login('user_42');
 /// await HeroSignal.User.addTags({'plan': 'pro'});
 /// HeroSignal.Notifications.clickStream.listen((e) => print(e.url));
+/// HeroSignal.Notifications.addPermissionObserver((granted) => print('izin: $granted'));
 /// HeroSignal.Notifications.setForegroundWillDisplayHandler((event) {
 ///   if (event.notification.data['silent_in_app'] == '1') event.preventDefault();
 /// });
@@ -48,6 +49,10 @@ class HeroSignal {
   static GlobalKey<NavigatorState>? _navigatorKey;
 
   static bool _handlerInstalled = false;
+
+  /// [_Notifications.addPermissionObserver] ile eklenen gözlemciler ve olay akışı aboneliği (ilk gözlemcide açılır).
+  static final List<HeroSignalPermissionObserver> _permissionObservers = [];
+  static StreamSubscription<bool>? _permissionSubscription;
 
   /// Yerelden Dart'a çağrı işleyicisi bir kez kurulur (ön plan kararı, in-app çizimi).
   static void _ensureHandler() {
@@ -184,6 +189,32 @@ class _Notifications {
   Future<bool> requestPermission() async => (await HeroSignal._channel.invokeMethod<bool>('requestPermission')) ?? false;
 
   Future<bool> get permission async => (await HeroSignal._channel.invokeMethod<bool>('getPermission')) ?? false;
+
+  /// Etkin bildirim izni değişiklikleri (yerel SDK izin gözlemcisinden): [requestPermission] sonrası ve uygulama
+  /// ön plana döndüğünde izin ayarlardan değiştiyse yeni değer gelir. İlk durum gönderilmez; güncel değer için
+  /// [permission] okunur.
+  Stream<bool> get permissionStream =>
+      HeroSignal._rawEvents.where((e) => e['type'] == 'permission').map((e) => e['permission'] == true);
+
+  /// eski sağlayıcı biçimli izin gözlemcisi ([permissionStream] üzerine). Aynı gözlemci iki kez eklenmez.
+  void addPermissionObserver(HeroSignalPermissionObserver observer) {
+    if (HeroSignal._permissionObservers.contains(observer)) return;
+    HeroSignal._permissionObservers.add(observer);
+    HeroSignal._permissionSubscription ??= permissionStream.listen((granted) {
+      for (final o in List<HeroSignalPermissionObserver>.of(HeroSignal._permissionObservers)) {
+        o(granted);
+      }
+    });
+  }
+
+  /// Gözlemciyi kaldırır; son gözlemci kaldırılınca olay akışı aboneliği kapatılır.
+  void removePermissionObserver(HeroSignalPermissionObserver observer) {
+    HeroSignal._permissionObservers.remove(observer);
+    if (HeroSignal._permissionObservers.isEmpty) {
+      HeroSignal._permissionSubscription?.cancel();
+      HeroSignal._permissionSubscription = null;
+    }
+  }
 
   /// Tepsideki/bildirim merkezindeki tüm HeroSignal bildirimlerini kaldırır ve rozeti sıfırlar.
   Future<void> clearAll() => HeroSignal._channel.invokeMethod<void>('clearAll');
