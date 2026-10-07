@@ -1,0 +1,27 @@
+name: herosignal_flutter
+description: "HeroSignal Flutter SDK: push kaydı, kullanıcı/tag yönetimi, olaylar ve teslimat geri bildirimi (Android + iOS)."
+version: 0.1.0
+homepage: https://github.com/herosignal/herosignal
+publish_to: 'none'
+
+environment:
+  sdk: ^3.10.7
+  flutter: '>=3.3.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.herosignal.herosignal_flutter
+        pluginClass: HerosignalFlutterPlugin
+      ios:
+        pluginClass: HerosignalFlutterPlugin
