@@ -17,6 +17,10 @@ import com.herosignal.sdk.HsInAppRenderer
 import com.herosignal.sdk.HsInboxItem
 import com.herosignal.sdk.HsInboxPage
 import com.herosignal.sdk.HsLog
+import com.herosignal.sdk.HsMessageCategory
+import com.herosignal.sdk.HsPreference
+import com.herosignal.sdk.HsPreferenceInput
+import com.herosignal.sdk.HsPreferencesResult
 import com.herosignal.sdk.HsNotification
 import com.herosignal.sdk.HsPushSubscriptionState
 import io.flutter.embedding.engine.plugins.FlutterPlugin
@@ -195,6 +199,14 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
                 "inboxMarkAllRead" -> HeroSignal.Inbox.markAllRead(reply(result) { it })
                 "inboxArchive" -> HeroSignal.Inbox.archive(call.argument<String>("id")!!, reply(result) { null })
                 "inboxUnreadCount" -> HeroSignal.Inbox.unreadCount(reply(result) { it })
+                // Tercihler (ADR-0019 §4); kanıt ve istek yerel SDK'da
+                "getPreferences" -> HeroSignal.User.getPreferences(reply(result) { it.toMap() })
+                "setPreferences" -> {
+                    val inputs = (call.argument<List<Map<String, Any?>>>("preferences") ?: emptyList()).map {
+                        HsPreferenceInput(it["category"] as? String ?: "", it["channel"] as? String, it["optedIn"] == true)
+                    }
+                    HeroSignal.User.setPreferences(inputs, reply(result) { it.toMap() })
+                }
                 else -> result.notImplemented()
             }
         } catch (e: IllegalArgumentException) {
@@ -256,5 +268,8 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
         "data" to data, "read" to read, "readAt" to readAt, "archivedAt" to archivedAt, "expiresAt" to expiresAt, "createdAt" to createdAt,
     )
     private fun HsInboxPage.toMap() = mapOf("items" to items.map { it.toMap() }, "unreadCount" to unreadCount, "nextCursor" to nextCursor, "hasMore" to hasMore)
+    private fun HsPreference.toMap() = mapOf("category" to category, "channel" to channel, "optedIn" to optedIn, "explicit" to explicit, "source" to source, "updatedAt" to updatedAt)
+    private fun HsMessageCategory.toMap() = mapOf("key" to key, "name" to name, "description" to description, "channels" to channels, "defaultOptedIn" to defaultOptedIn)
+    private fun HsPreferencesResult.toMap() = mapOf("data" to preferences.map { it.toMap() }, "categories" to categories.map { it.toMap() })
     private fun HsPushSubscriptionState.toMap() = mapOf("id" to id, "token" to token, "optedIn" to optedIn, "permission" to permission)
 }

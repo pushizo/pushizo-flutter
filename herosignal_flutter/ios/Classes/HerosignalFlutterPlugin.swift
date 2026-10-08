@@ -131,6 +131,14 @@ public class HerosignalFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHand
             inbox(result) { try await HeroSignal.Inbox.archive(args["id"] as? String ?? ""); return nil }
         case "inboxUnreadCount":
             inbox(result) { try await HeroSignal.Inbox.unreadCount() }
+        // Tercihler (ADR-0019 §4); kanıt ve istek yerel SDK'da
+        case "getPreferences":
+            inbox(result) { Self.map(try await HeroSignal.User.getPreferences()) }
+        case "setPreferences":
+            let inputs = (args["preferences"] as? [[String: Any]] ?? []).map {
+                HSPreferenceInput(category: $0["category"] as? String ?? "", channel: $0["channel"] as? String, optedIn: $0["optedIn"] as? Bool ?? false)
+            }
+            inbox(result) { Self.map(try await HeroSignal.User.setPreferences(inputs)) }
         default: result(FlutterMethodNotImplemented)
         }
     }
@@ -211,6 +219,18 @@ public class HerosignalFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHand
         ["id": item.id, "messageId": item.messageId as Any, "title": item.title as Any, "body": item.body as Any,
          "url": item.url as Any, "imageUrl": item.imageUrl as Any, "data": item.data, "read": item.read,
          "readAt": millis(item.readAt), "archivedAt": millis(item.archivedAt), "expiresAt": millis(item.expiresAt), "createdAt": millis(item.createdAt)]
+    }
+
+    private static func map(_ p: HSPreference) -> [String: Any] {
+        ["category": p.category, "channel": p.channel as Any, "optedIn": p.optedIn, "explicit": p.explicit, "source": p.source as Any, "updatedAt": millis(p.updatedAt)]
+    }
+
+    private static func map(_ c: HSMessageCategory) -> [String: Any] {
+        ["key": c.key, "name": c.name, "description": c.description, "channels": c.channels as Any, "defaultOptedIn": c.defaultOptedIn]
+    }
+
+    private static func map(_ r: HSPreferencesResult) -> [String: Any] {
+        ["data": r.preferences.map { map($0) }, "categories": r.categories.map { map($0) }]
     }
 
     private static func map(_ page: HSInboxPage) -> [String: Any] {

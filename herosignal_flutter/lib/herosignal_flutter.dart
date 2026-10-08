@@ -11,6 +11,7 @@
 ///   if (event.notification.data['silent_in_app'] == '1') event.preventDefault();
 /// });
 /// await HeroSignal.User.addEmail('ali@example.com');
+/// final prefs = await HeroSignal.User.getPreferences();
 /// await HeroSignal.InAppMessages.addTrigger('level', 'gold');
 /// final page = await HeroSignal.Inbox.list(limit: 20);
 /// ```
@@ -159,6 +160,22 @@ class _User {
 
   Future<String?> get externalId => HeroSignal._channel.invokeMethod<String>('getExternalId');
   Future<String?> get id => HeroSignal._channel.invokeMethod<String>('getUserId');
+
+  /// Kullanıcının kategori/kanal tercihleri ve app kategorileri (ADR-0019 §4); sahiplik kanıtı yerel SDK'da eklenir.
+  /// Abonelik henüz yoksa [PlatformException] (`NOT_READY`).
+  Future<HeroSignalPreferences> getPreferences() async {
+    final result = await HeroSignal._channel.invokeMethod<Map<Object?, Object?>>('getPreferences');
+    return HeroSignalPreferences.fromMap(result ?? const {});
+  }
+
+  /// Tercihleri yazar (1-100 kayıt; `channel` null = tüm kanallar); güncel listeyi döndürür.
+  Future<HeroSignalPreferences> setPreferences(List<HeroSignalPreferenceInput> preferences) async {
+    final result = await HeroSignal._channel.invokeMethod<Map<Object?, Object?>>(
+      'setPreferences',
+      {'preferences': preferences.map((p) => p.toMap()).toList()},
+    );
+    return HeroSignalPreferences.fromMap(result ?? const {});
+  }
 
   _PushSubscription get pushSubscription => const _PushSubscription();
 }

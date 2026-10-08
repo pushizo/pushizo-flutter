@@ -52,6 +52,24 @@ void main() {
           return 0;
         case 'inboxUnreadCount':
           return 3;
+        case 'getPreferences':
+        case 'setPreferences':
+          return {
+            'data': [
+              {'category': 'promos', 'channel': null, 'optedIn': false, 'explicit': true, 'source': 'sdk', 'updatedAt': 1759838400000},
+              {'category': 'orders', 'channel': 'android_push', 'optedIn': true, 'explicit': false, 'source': null, 'updatedAt': null},
+            ],
+            'categories': [
+              {
+                'key': 'promos',
+                'name': {'tr': 'Kampanyalar', 'en': 'Promotions'},
+                'description': {'tr': 'İndirimler'},
+                'channels': ['android_push', 'email'],
+                'defaultOptedIn': false,
+              },
+              {'key': 'orders', 'name': {'en': 'Orders'}, 'description': <String, String>{}, 'channels': null, 'defaultOptedIn': true},
+            ],
+          };
         default:
           return null;
       }
@@ -152,6 +170,60 @@ void main() {
     await HeroSignal.Inbox.archive('ibx_1');
     expect(calls.last.method, 'inboxArchive');
     expect(await HeroSignal.Inbox.unreadCount(), 3);
+  });
+
+  test('tercih çağrıları ve modelleri', () async {
+    final prefs = await HeroSignal.User.getPreferences();
+    expect(calls.last.method, 'getPreferences');
+    expect(prefs.preferences.length, 2);
+    final promos = prefs.preferences.first;
+    expect(promos.channel, isNull);
+    expect(promos.optedIn, isFalse);
+    expect(promos.explicit, isTrue);
+    expect(promos.source, 'sdk');
+    expect(promos.updatedAt, DateTime.utc(2025, 10, 7, 12));
+    expect(prefs.preferences[1].channel, 'android_push');
+    expect(prefs.preferences[1].updatedAt, isNull);
+    final cat = prefs.categories.first;
+    expect(cat.localizedName('tr'), 'Kampanyalar');
+    expect(cat.localizedName('de'), 'Promotions');
+    expect(cat.channels, ['android_push', 'email']);
+    expect(cat.defaultOptedIn, isFalse);
+    expect(prefs.categories[1].channels, isNull);
+    expect(prefs.categories[1].localizedName('tr'), 'Orders');
+
+    final updated = await HeroSignal.User.setPreferences([
+      const HeroSignalPreferenceInput(category: 'promos', optedIn: false),
+      const HeroSignalPreferenceInput(category: 'orders', channel: 'email', optedIn: true),
+    ]);
+    expect(calls.last.method, 'setPreferences');
+    expect(calls.last.arguments, {
+      'preferences': [
+        {'category': 'promos', 'channel': null, 'optedIn': false},
+        {'category': 'orders', 'channel': 'email', 'optedIn': true},
+      ],
+    });
+    expect(updated.categories.map((c) => c.key).toList(), ['promos', 'orders']);
+  });
+
+  test('in-app mesaj modeli: varyant, push_prompt ve outcome aksiyonları', () {
+    final json = message();
+    json['variant_id'] = 'var_b';
+    (json['display'] as Map)['blocks'] = [
+      {'type': 'button', 'id': 'allow', 'text': 'İzin ver', 'action': {'type': 'push_prompt'}},
+      {'type': 'button', 'id': 'buy', 'text': 'Satın al', 'action': {'type': 'outcome', 'name': 'purchase', 'value': 49.9}},
+      {'type': 'button', 'id': 'later', 'text': 'Sonra', 'action': {'type': 'outcome', 'name': 'remind_later'}},
+      {'type': 'button', 'id': 'noname', 'text': 'Bozuk', 'action': {'type': 'outcome'}},
+    ];
+    final m = HeroSignalInAppMessage.fromMap(jsonDecode(jsonEncode(json)) as Map<String, dynamic>);
+    expect(m.variantId, 'var_b');
+    expect(m.buttons.map((b) => b.id).toList(), ['allow', 'buy', 'later']); // adsız outcome düğmesi atlanır
+    expect(m.buttons[0].action.type, HeroSignalInAppActionType.pushPrompt);
+    expect(m.buttons[1].action.type, HeroSignalInAppActionType.outcome);
+    expect(m.buttons[1].action.outcomeName, 'purchase');
+    expect(m.buttons[1].action.outcomeValue, 49.9);
+    expect(m.buttons[2].action.outcomeValue, isNull);
+    expect(HeroSignalInAppMessage.fromMap(message()).variantId, isNull);
   });
 
   test('in-app mesaj modeli: geçersiz düğme ve tanınmayan blok atlanır', () {

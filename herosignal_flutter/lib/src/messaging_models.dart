@@ -5,14 +5,14 @@ part of '../herosignal_flutter.dart';
 /// In-app mesaj düzeni.
 enum HeroSignalInAppLayout { modal, bannerTop, bannerBottom, fullscreen }
 
-/// In-app düğme aksiyonu türü.
-enum HeroSignalInAppActionType { dismiss, url, deeplink, tags }
+/// In-app düğme aksiyonu türü. `pushPrompt` yerel bildirim izni istemini açar, `outcome` olay gönderir (ikisi de yerel SDK'da uygulanır).
+enum HeroSignalInAppActionType { dismiss, url, deeplink, tags, pushPrompt, outcome }
 
 String? _nonEmpty(Object? value) => value is String && value.isNotEmpty ? value : null;
 
 /// In-app düğme aksiyonu.
 class HeroSignalInAppAction {
-  const HeroSignalInAppAction({required this.type, this.url, this.tags = const {}});
+  const HeroSignalInAppAction({required this.type, this.url, this.tags = const {}, this.outcomeName, this.outcomeValue});
 
   final HeroSignalInAppActionType type;
 
@@ -21,6 +21,10 @@ class HeroSignalInAppAction {
 
   /// `tags` aksiyonunun kullanıcıya yazdığı etiketler.
   final Map<String, String> tags;
+
+  /// `outcome` aksiyonunun gönderdiği olay adı ve isteğe bağlı değeri.
+  final String? outcomeName;
+  final double? outcomeValue;
 
   /// Geçersiz aksiyon (ör. http dışı `url`) için null.
   static HeroSignalInAppAction? fromMap(Map<Object?, Object?>? map) {
@@ -36,6 +40,18 @@ class HeroSignalInAppAction {
       case 'tags':
         final tags = (map['tags'] as Map?)?.map((k, v) => MapEntry(k.toString(), v.toString())) ?? const <String, String>{};
         return HeroSignalInAppAction(type: HeroSignalInAppActionType.tags, tags: tags);
+      case 'push_prompt':
+        return const HeroSignalInAppAction(type: HeroSignalInAppActionType.pushPrompt);
+      case 'outcome':
+        // Adsız outcome düğmesi geçersizdir (yerel SDK da atlar).
+        final name = _nonEmpty(map['name']);
+        if (name == null) return null;
+        final value = map['value'];
+        return HeroSignalInAppAction(
+          type: HeroSignalInAppActionType.outcome,
+          outcomeName: name,
+          outcomeValue: value is num && value.isFinite ? value.toDouble() : null,
+        );
       default:
         return const HeroSignalInAppAction(type: HeroSignalInAppActionType.dismiss);
     }
@@ -109,10 +125,14 @@ class HeroSignalInAppMessage {
     this.backgroundColor,
     this.textColor,
     this.autoDismissSeconds,
+    this.variantId,
   });
 
   final String id;
   final int priority;
+
+  /// Sunucunun seçtiği A/B görünüm varyantı (olay bildirimlerinde yerel SDK geri gönderir).
+  final String? variantId;
   final HeroSignalInAppLayout layout;
   final String? backgroundColor;
   final String? textColor;
@@ -129,6 +149,7 @@ class HeroSignalInAppMessage {
     return HeroSignalInAppMessage(
       id: map['id'] as String,
       priority: (map['priority'] as num?)?.toInt() ?? 0,
+      variantId: _nonEmpty(map['variant_id']),
       layout: switch (display['layout']) {
         'banner_top' => HeroSignalInAppLayout.bannerTop,
         'banner_bottom' => HeroSignalInAppLayout.bannerBottom,
@@ -248,4 +269,93 @@ class HeroSignalInboxPage {
         nextCursor: map['nextCursor'] as String?,
         hasMore: map['hasMore'] == true,
       );
+}
+
+/// Kullanıcı tercihi (ADR-0019 §4): kategori × kanal (`null` = tüm kanallar) → opt-in. [explicit] false ise değer
+/// kategori varsayılanından türetilmiştir; [source] kaydı yazan taraf (sdk, api, preference_center…).
+class HeroSignalPreference {
+  const HeroSignalPreference({
+    required this.category,
+    required this.optedIn,
+    required this.explicit,
+    this.channel,
+    this.source,
+    this.updatedAt,
+  });
+
+  final String category;
+
+  /// `null` | `ios_push` | `android_push` | `web_push` | `email` | `sms`.
+  final String? channel;
+  final bool optedIn;
+  final bool explicit;
+  final String? source;
+  final DateTime? updatedAt;
+
+  factory HeroSignalPreference.fromMap(Map<Object?, Object?> map) => HeroSignalPreference(
+        category: map['category'] as String,
+        channel: map['channel'] as String?,
+        optedIn: map['optedIn'] == true,
+        explicit: map['explicit'] == true,
+        source: map['source'] as String?,
+        updatedAt: _epochMs(map['updatedAt']),
+      );
+}
+
+/// Mesaj kategorisi: çok dilli ad/açıklama (`dil kodu → metin`), kanal kısıtı (`null` = tümü) ve varsayılan opt-in.
+class HeroSignalMessageCategory {
+  const HeroSignalMessageCategory({
+    required this.key,
+    required this.name,
+    this.description = const {},
+    this.channels,
+    this.defaultOptedIn = true,
+  });
+
+  final String key;
+  final Map<String, String> name;
+  final Map<String, String> description;
+  final List<String>? channels;
+  final bool defaultOptedIn;
+
+  /// Verilen dilde ad; yoksa İngilizce, o da yoksa ilk tanımlı dil.
+  String localizedName(String language) => name[language] ?? name['en'] ?? (name.values.isEmpty ? key : name.values.first);
+
+  factory HeroSignalMessageCategory.fromMap(Map<Object?, Object?> map) => HeroSignalMessageCategory(
+        key: map['key'] as String,
+        name: (map['name'] as Map?)?.map((k, v) => MapEntry(k.toString(), v.toString())) ?? const {},
+        description: (map['description'] as Map?)?.map((k, v) => MapEntry(k.toString(), v.toString())) ?? const {},
+        channels: (map['channels'] as List?)?.map((c) => c.toString()).toList(),
+        defaultOptedIn: map['defaultOptedIn'] != false,
+      );
+}
+
+/// `User.getPreferences` / `setPreferences` sonucu: kullanıcının tercihleri ve app'in kategorileri.
+class HeroSignalPreferences {
+  const HeroSignalPreferences({required this.preferences, required this.categories});
+
+  final List<HeroSignalPreference> preferences;
+  final List<HeroSignalMessageCategory> categories;
+
+  factory HeroSignalPreferences.fromMap(Map<Object?, Object?> map) => HeroSignalPreferences(
+        preferences: ((map['data'] as List?) ?? const [])
+            .whereType<Map>()
+            .map((m) => HeroSignalPreference.fromMap(m.cast<Object?, Object?>()))
+            .toList(),
+        categories: ((map['categories'] as List?) ?? const [])
+            .whereType<Map>()
+            .map((m) => HeroSignalMessageCategory.fromMap(m.cast<Object?, Object?>()))
+            .toList(),
+      );
+}
+
+/// `User.setPreferences` girdisi; [channel] null ise tüm kanallar.
+class HeroSignalPreferenceInput {
+  const HeroSignalPreferenceInput({required this.category, required this.optedIn, this.channel});
+
+  final String category;
+  final String? channel;
+  final bool optedIn;
+
+  Map<String, Object?> toMap() => {'category': category, 'channel': channel, 'optedIn': optedIn};
 }
