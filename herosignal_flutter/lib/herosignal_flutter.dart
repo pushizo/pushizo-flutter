@@ -202,6 +202,18 @@ class _Notifications {
     HeroSignal._ensureHandler();
     return HeroSignal._channel.invokeMethod<void>('setForegroundHandlerEnabled', {'enabled': handler != null});
   }
+
+  /// SDK'nın gösterdiği bildirimleri tepsiden kaldırır. iOS'ta teslim edilmiş tüm bildirimler kaldırılır ve rozet sıfırlanır.
+  Future<void> clearAll() => HeroSignal._channel.invokeMethod<void>('clearAll');
+
+  /// Tek bildirimi kaldırır. [id]: [HeroSignalNotification.notificationId] (Android sistem bildirim kimliği;
+  /// iOS istek kimliği veya teslimat kimliği).
+  Future<void> removeNotification(String id) =>
+      HeroSignal._channel.invokeMethod<void>('removeNotification', {'id': id});
+
+  /// Gruptaki bildirimleri kaldırır (Android `hs_group`, iOS `thread-id`).
+  Future<void> removeGroupedNotifications(String group) =>
+      HeroSignal._channel.invokeMethod<void>('removeGroupedNotifications', {'group': group});
 }
 
 /// In-app mesajlar: liste, tetik değerlendirme, sıklık ve olay kaydı yerel SDK'dadır; mesaj Flutter widget'larıyla

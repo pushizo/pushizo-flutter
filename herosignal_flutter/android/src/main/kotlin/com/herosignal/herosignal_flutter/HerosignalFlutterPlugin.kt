@@ -158,6 +158,14 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
                     pendingPermission = result
                     HeroSignal.Notifications.requestPermission(act)
                 }
+                "clearAll" -> { HeroSignal.Notifications.clearAll(); result.success(null) }
+                "removeNotification" -> {
+                    val id = call.argument<String>("id")?.trim()?.toIntOrNull()
+                    if (id == null) { result.error("INVALID_ARGUMENT", "removeNotification: id sayısal Android bildirim kimliği olmalı", null); return }
+                    HeroSignal.Notifications.removeNotification(id)
+                    result.success(null)
+                }
+                "removeGroupedNotifications" -> { HeroSignal.Notifications.removeGroupedNotifications(call.argument<String>("group") ?: ""); result.success(null) }
                 "sendEvent" -> {
                     HeroSignal.Session.sendEvent(call.argument<String>("name")!!, call.argument<Map<String, Any?>>("properties") ?: emptyMap(), call.argument<Double>("value"))
                     result.success(null)
@@ -241,7 +249,7 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
         else -> HsLog.Level.WARN
     }
 
-    private fun HsNotification.toMap() = mapOf("title" to title, "body" to body, "url" to url, "deliveryId" to deliveryId, "messageId" to messageId, "data" to data)
+    private fun HsNotification.toMap() = mapOf("title" to title, "body" to body, "url" to url, "deliveryId" to deliveryId, "messageId" to messageId, "notificationId" to androidNotificationId?.toString(), "data" to data)
     private fun HsInboxItem.toMap() = mapOf(
         "id" to id, "messageId" to messageId, "title" to title, "body" to body, "url" to url, "imageUrl" to imageUrl,
         "data" to data, "read" to read, "readAt" to readAt, "archivedAt" to archivedAt, "expiresAt" to expiresAt, "createdAt" to createdAt,

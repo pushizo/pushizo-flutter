@@ -48,6 +48,17 @@ void main() {
     expect(calls.last.arguments, {'name': 'purchase', 'properties': {'sku': 'A1'}, 'value': 49.9});
   });
 
+  test('bildirim tepsisi çağrıları platforma iletilir', () async {
+    await HeroSignal.Notifications.clearAll();
+    await HeroSignal.Notifications.removeNotification('1234');
+    await HeroSignal.Notifications.removeGroupedNotifications('orders');
+    expect(calls.map((c) => c.method).toList(), ['clearAll', 'removeNotification', 'removeGroupedNotifications']);
+    expect(calls[1].arguments, {'id': '1234'});
+    expect(calls[2].arguments, {'group': 'orders'});
+    final n = HeroSignalNotification.fromMap({'title': 'T', 'notificationId': '1234', 'data': {}});
+    expect(n.notificationId, '1234');
+  });
+
   test('alias çağrıları platforma iletilir', () async {
     await HeroSignal.User.addAlias('crm_id', '42');
     await HeroSignal.User.addAliases({'shop_id': '7', 'erp_id': 'x'});

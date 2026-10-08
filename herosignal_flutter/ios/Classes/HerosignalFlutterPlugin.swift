@@ -82,6 +82,9 @@ public class HerosignalFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHand
             Task { let p = await HeroSignal.Notifications.permission(); DispatchQueue.main.async { result(p == .authorized || p == .provisional) } }
         case "requestPermission":
             HeroSignal.Notifications.requestPermission { granted in DispatchQueue.main.async { result(granted) } }
+        case "clearAll": HeroSignal.Notifications.clearAll(); result(nil)
+        case "removeNotification": HeroSignal.Notifications.removeNotification(id: args["id"] as? String ?? ""); result(nil)
+        case "removeGroupedNotifications": HeroSignal.Notifications.removeGroupedNotifications(group: args["group"] as? String ?? ""); result(nil)
         case "sendEvent":
             HeroSignal.Session.sendEvent(args["name"] as? String ?? "", properties: args["properties"] as? [String: Any] ?? [:], value: args["value"] as? Double)
             result(nil)
@@ -213,7 +216,8 @@ public class HerosignalFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHand
     }
 
     private static func map(_ n: HSNotification) -> [String: Any] {
-        ["title": n.title as Any, "body": n.body as Any, "url": n.url as Any, "deliveryId": n.deliveryId as Any, "messageId": n.messageId as Any, "data": n.data]
+        ["title": n.title as Any, "body": n.body as Any, "url": n.url as Any, "deliveryId": n.deliveryId as Any, "messageId": n.messageId as Any,
+         "notificationId": n.deliveryId as Any, "data": n.data]
     }
 
     private static func map(_ s: HSPushSubscriptionState) -> [String: Any] {
