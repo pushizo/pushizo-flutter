@@ -125,9 +125,9 @@ void main() {
     );
     final streamed = <bool>[];
     final seen = <bool>[];
-    final HeroSignalPermissionObserver observer = (granted) {
+    void observer(bool granted) {
       seen.add(granted);
-    };
+    }
     final subscription = HeroSignal.Notifications.permissionStream.listen(streamed.add);
     HeroSignal.Notifications.addPermissionObserver(observer);
     HeroSignal.Notifications.addPermissionObserver(observer);
