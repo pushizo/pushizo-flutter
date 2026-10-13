@@ -1,8 +1,11 @@
 name: herosignal_flutter
 description: "HeroSignal Flutter SDK: push kaydı, kullanıcı/tag yönetimi, olaylar ve teslimat geri bildirimi (Android + iOS)."
 version: 0.1.0
-homepage: https://github.com/herosignal/herosignal
-publish_to: 'none'
+homepage: https://github.com/exec0de/herosignal/tree/main/sdk/flutter/herosignal_flutter
+repository: https://github.com/exec0de/herosignal
+issue_tracker: https://github.com/exec0de/herosignal/issues
+documentation: https://github.com/exec0de/herosignal/blob/main/docs/sdk/flutter.md
+# pub.dev yayını sdk-release.yml `pubdev` işiyle (workflow_dispatch) yapılır; yerel `dart pub publish --dry-run` ile kontrol edin.
 
 environment:
   sdk: ^3.10.7
