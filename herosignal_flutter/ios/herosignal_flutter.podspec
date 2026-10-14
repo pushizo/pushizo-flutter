@@ -5,7 +5,7 @@ Pod::Spec.new do |s|
   s.description      = <<-DESC
 HeroSignal iOS SDK üzerine Flutter MethodChannel/EventChannel köprüsü.
                        DESC
-  s.homepage         = 'https://github.com/herosignal/herosignal'
+  s.homepage         = 'https://github.com/exec0de/herosignal'
   s.license          = { :file => '../LICENSE' }
   s.author           = { 'HeroSignal' => 'sdk@herosignal.dev' }
   s.source           = { :path => '.' }
