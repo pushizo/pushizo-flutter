@@ -40,8 +40,40 @@ class HeroSignal {
   static const EventChannel _events = EventChannel('herosignal_flutter/events');
   static Stream<Map<String, dynamic>>? _eventStream;
 
-  static Stream<Map<String, dynamic>> get _rawEvents =>
-      _eventStream ??= _events.receiveBroadcastStream().map((e) => Map<String, dynamic>.from(e as Map));
+  static Stream<Map<String, dynamic>> get _rawEvents {
+    final existing = _eventStream;
+    if (existing != null) return existing;
+    final stream = _events.receiveBroadcastStream().map((e) => Map<String, dynamic>.from(e as Map));
+    _eventStream = stream;
+    // Tıklamalar ayrı, bekletmeli akıştan dağıtılır: olay akışı başka bir dinleyiciyle (ör. permissionStream) açıldığında
+    // gelen tıklama, `clickStream` henüz dinlenmiyorsa kaybolmaz (soğuk başlangıç).
+    stream.where((e) => e['type'] == 'click').listen((e) {
+      final click = HeroSignalClickEvent.fromMap(e);
+      if (_clicks.hasListener) {
+        _clicks.add(click);
+      } else {
+        if (_pendingClicks.length >= _maxPendingClicks) _pendingClicks.removeAt(0);
+        _pendingClicks.add(click);
+      }
+    });
+    return stream;
+  }
+
+  /// Bildirim tıklamaları; ilk dinleyici bağlanınca bekleyenler sırayla iletilir.
+  static final StreamController<HeroSignalClickEvent> _clicks = StreamController<HeroSignalClickEvent>.broadcast(
+    onListen: () {
+      final pending = List<HeroSignalClickEvent>.of(_pendingClicks);
+      _pendingClicks.clear();
+      pending.forEach(_clicks.add);
+    },
+  );
+  static final List<HeroSignalClickEvent> _pendingClicks = [];
+  static const int _maxPendingClicks = 20;
+
+  /// [_InAppMessages.addClickListener] / [_InAppMessages.addLifecycleListener] ile eklenen dinleyicilerin abonelikleri.
+  static final Map<HeroSignalInAppClickListener, StreamSubscription<HeroSignalInAppClickEvent>> _inAppClickListeners = {};
+  static final Map<HeroSignalInAppLifecycleListener, StreamSubscription<HeroSignalInAppLifecycleEvent>>
+      _inAppLifecycleListeners = {};
 
   /// Ön plan gösterim kararı veren Dart işleyicisi (yoksa yerel SDK bildirimi gösterir).
   static HeroSignalForegroundWillDisplayHandler? _foregroundHandler;
@@ -70,7 +102,9 @@ class HeroSignal {
         if (handler == null) return false;
         final args = Map<Object?, Object?>.from(call.arguments as Map);
         final event = HeroSignalForegroundEvent(
-            HeroSignalNotification.fromMap(Map<Object?, Object?>.from(args['notification'] as Map)));
+          HeroSignalNotification.fromMap(Map<Object?, Object?>.from(args['notification'] as Map)),
+          eventId: args['eventId'] as String?,
+        );
         try {
           await handler(event);
         } catch (_) {
@@ -189,6 +223,9 @@ class _PushSubscription {
   }
 
   Future<String?> get id async => (await state).id;
+
+  /// Push token'ı (FCM/APNs); henüz alınmadıysa `null`.
+  Future<String?> get token async => (await state).token;
   Future<bool> get optedIn async => (await state).optedIn;
   Future<void> optIn() => HeroSignal._channel.invokeMethod<void>('optIn');
   Future<void> optOut() => HeroSignal._channel.invokeMethod<void>('optOut');
@@ -236,17 +273,27 @@ class _Notifications {
   /// Tepsideki/bildirim merkezindeki tüm HeroSignal bildirimlerini kaldırır ve rozeti sıfırlar.
   Future<void> clearAll() => HeroSignal._channel.invokeMethod<void>('clearAll');
 
-  /// Yalnızca Android: tek bir bildirimi [HeroSignalNotification.androidNotificationId] ile kaldırır (iOS'ta etkisiz).
+  /// Yalnızca Android: tek bir bildirimi [HeroSignalNotification.androidNotificationId] ile kaldırır (iOS'ta etkisiz;
+  /// iOS için [removeNotificationByIdentifier]).
   Future<void> removeNotification(int androidNotificationId) =>
       HeroSignal._channel.invokeMethod<void>('removeNotification', {'id': androidNotificationId});
+
+  /// Yalnızca iOS: tek bir bildirimi istek kimliğiyle (`UNNotificationRequest.identifier`; mesajda `collapse_id`
+  /// verildiyse odur) bildirim merkezinden kaldırır (Android'de etkisiz).
+  Future<void> removeNotificationByIdentifier(String identifier) =>
+      HeroSignal._channel.invokeMethod<void>('removeNotification', {'identifier': identifier});
 
   /// Aynı grup anahtarına sahip bildirimleri kaldırır (Android `android_group`, iOS `thread-id`).
   Future<void> removeGroupedNotifications(String group) =>
       HeroSignal._channel.invokeMethod<void>('removeGroupedNotifications', {'group': group});
 
-  /// Bildirim/düğme tıklamaları.
-  Stream<HeroSignalClickEvent> get clickStream =>
-      HeroSignal._rawEvents.where((e) => e['type'] == 'click').map(HeroSignalClickEvent.fromMap);
+  /// Bildirim/düğme tıklamaları. Uygulama kapalıyken (veya akış dinlenmeden önce) gelen tıklamalar ilk dinleyiciye
+  /// teslim edilir.
+  Stream<HeroSignalClickEvent> get clickStream {
+    // Yerel olay akışını açar (tıklama dağıtıcısı ilk erişimde kurulur).
+    HeroSignal._rawEvents;
+    return HeroSignal._clicks.stream;
+  }
 
   /// Ön planda gelen bildirimler (yalnızca bilgi; gösterim kararı için [setForegroundWillDisplayHandler]).
   Stream<HeroSignalNotification> get foregroundStream => HeroSignal._rawEvents
@@ -302,6 +349,26 @@ class _InAppMessages {
       .map(HeroSignalInAppLifecycleEvent.fromMap)
       .where((e) => e != null)
       .cast<HeroSignalInAppLifecycleEvent>();
+
+  /// eski sağlayıcı biçimli tıklama dinleyicisi ([clickStream] üzerine). Aynı dinleyici iki kez eklenmez.
+  void addClickListener(HeroSignalInAppClickListener listener) {
+    HeroSignal._inAppClickListeners.putIfAbsent(listener, () => clickStream.listen(listener));
+  }
+
+  /// [addClickListener] ile eklenen dinleyiciyi kaldırır.
+  void removeClickListener(HeroSignalInAppClickListener listener) {
+    HeroSignal._inAppClickListeners.remove(listener)?.cancel();
+  }
+
+  /// eski sağlayıcı biçimli yaşam döngüsü dinleyicisi ([lifecycleStream] üzerine). Aynı dinleyici iki kez eklenmez.
+  void addLifecycleListener(HeroSignalInAppLifecycleListener listener) {
+    HeroSignal._inAppLifecycleListeners.putIfAbsent(listener, () => lifecycleStream.listen(listener));
+  }
+
+  /// [addLifecycleListener] ile eklenen dinleyiciyi kaldırır.
+  void removeLifecycleListener(HeroSignalInAppLifecycleListener listener) {
+    HeroSignal._inAppLifecycleListeners.remove(listener)?.cancel();
+  }
 }
 
 /// Bildirim kutusu (`add_to_inbox` mesajları); login'de verilen `identityHash` yerel SDK tarafından eklenir.
