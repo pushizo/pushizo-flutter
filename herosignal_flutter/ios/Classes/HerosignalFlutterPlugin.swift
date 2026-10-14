@@ -16,6 +16,14 @@ public class HerosignalFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHand
     private var foregroundHandlerEnabled = false
     /// Dart'ın çizdiği in-app mesajların etkileşim kanalları (mesaj kimliğine göre).
     private var inAppHandles: [String: HSInAppHandle] = [:]
+    /// Dart EventChannel dinleyicisi bağlanmadan gelen bildirim tıklamaları (soğuk başlangıç); bağlanınca sırayla
+    /// iletilir. Yalnızca ana kuyrukta erişilir.
+    private var pendingClicks: [[String: Any]] = []
+    private static let maxPendingClicks = 20
+    /// Dart gösterim kararını beklerken ertelenen ön plan olayları (Dart `display()` için); yalnızca ana kuyrukta.
+    private var foregroundEvents: [String: HSForegroundEvent] = [:]
+    private var foregroundEventOrder: [String] = []
+    private static let maxForegroundEvents = 32
 
     init(channel: FlutterMethodChannel) {
         self.channel = channel
@@ -45,7 +53,7 @@ public class HerosignalFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHand
             if !listenersRegistered {
                 listenersRegistered = true
                 HeroSignal.Notifications.addClickListener { [weak self] e in
-                    self?.emit(["type": "click", "notification": Self.map(e.notification), "actionId": e.actionId as Any, "url": e.url as Any])
+                    self?.emitClick(["type": "click", "notification": Self.map(e.notification), "actionId": e.actionId as Any, "url": e.url as Any])
                 }
                 HeroSignal.Notifications.addForegroundLifecycleListener { [weak self] e in
                     self?.emit(["type": "foreground", "notification": Self.map(e.notification)])
@@ -75,6 +83,10 @@ public class HerosignalFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHand
         case "addAliases": HeroSignal.User.addAliases(args["aliases"] as? [String: String] ?? [:]); result(nil)
         case "removeAlias": HeroSignal.User.removeAlias(args["label"] as? String ?? ""); result(nil)
         case "setForegroundHandlerEnabled": foregroundHandlerEnabled = args["enabled"] as? Bool ?? false; result(nil)
+        // Dart `HeroSignalForegroundEvent.display()`: ertelenen bildirim şimdi gösterilir (SDK yineleneni yok sayar).
+        case "displayForegroundNotification":
+            if let id = args["eventId"] as? String { takeForegroundEvent(id)?.display() }
+            result(nil)
         case "setLanguage": HeroSignal.User.setLanguage(args["code"] as? String ?? "en"); result(nil)
         case "getExternalId": result(HeroSignal.User.externalId)
         case "getUserId": result(HeroSignal.User.id)
@@ -86,11 +98,16 @@ public class HerosignalFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHand
             Task { let p = await HeroSignal.Notifications.permission(); DispatchQueue.main.async { result(p == .authorized || p == .provisional) } }
         case "requestPermission":
             HeroSignal.Notifications.requestPermission { granted in DispatchQueue.main.async { result(granted) } }
-        // Bildirim merkezi: tümünü temizle (rozet dahil) ve thread-id ile grup kaldırma. Tekil kaldırma Android
-        // bildirim kimliği ister; iOS'ta karşılığı olmadığından çağrı etkisiz tamamlanır (eski sağlayıcı ile aynı).
+        // Bildirim merkezi: tümünü temizle (rozet dahil), thread-id ile grup kaldırma ve istek kimliğiyle
+        // (`UNNotificationRequest.identifier`) tekil kaldırma. Yalnızca Android tepsi kimliği verildiyse iOS'ta karşılığı
+        // olmadığından çağrı etkisiz tamamlanır.
         case "clearAll": HeroSignal.Notifications.clearAll(); result(nil)
         case "removeGroupedNotifications": HeroSignal.Notifications.removeGroupedNotifications(args["group"] as? String ?? ""); result(nil)
-        case "removeNotification": result(nil)
+        case "removeNotification":
+            if let identifier = args["identifier"] as? String, !identifier.isEmpty {
+                HeroSignal.Notifications.removeNotification(identifier: identifier)
+            }
+            result(nil)
         case "sendEvent":
             HeroSignal.Session.sendEvent(args["name"] as? String ?? "", properties: args["properties"] as? [String: Any] ?? [:], value: args["value"] as? Double)
             result(nil)
@@ -153,18 +170,52 @@ public class HerosignalFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHand
         HeroSignal.setDeviceTokenError(error)
     }
 
-    public func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? { sink = events; return nil }
+    public func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+        sink = events
+        let buffered = pendingClicks
+        pendingClicks.removeAll()
+        buffered.forEach { events($0) }
+        return nil
+    }
     public func onCancel(withArguments arguments: Any?) -> FlutterError? { sink = nil; return nil }
 
     private func emit(_ payload: [String: Any]) { DispatchQueue.main.async { self.sink?(payload) } }
 
+    /// Tıklama olayı: akış henüz dinlenmiyorsa (soğuk başlangıç) kaybolmaması için dinleyici bağlanana kadar bekletilir.
+    private func emitClick(_ payload: [String: Any]) {
+        DispatchQueue.main.async {
+            if let sink = self.sink {
+                sink(payload)
+            } else {
+                if self.pendingClicks.count >= Self.maxPendingClicks { self.pendingClicks.removeFirst() }
+                self.pendingClicks.append(payload)
+            }
+        }
+    }
+
+    private func takeForegroundEvent(_ id: String) -> HSForegroundEvent? {
+        foregroundEventOrder.removeAll { $0 == id }
+        return foregroundEvents.removeValue(forKey: id)
+    }
+
     /// Gösterim kararı Dart işleyicisine sorulur: önce ertelenir; Dart `preventDefault()` çağırmadıysa
-    /// veya çağrı başarısız olursa `display()` ile gösterilir (yanıt gelmezse SDK 25 sn sonra kapatır).
+    /// veya çağrı başarısız olursa `display()` ile gösterilir (yanıt gelmezse SDK 25 sn sonra kapatır). Engellenen olay
+    /// `eventId` ile saklanır; Dart sonradan `event.display()` çağırırsa (`displayForegroundNotification`) gösterilir.
     private func askDartToDisplay(_ event: HSForegroundEvent) {
         event.preventDefault()
         DispatchQueue.main.async {
-            self.channel.invokeMethod("foregroundWillDisplay", arguments: ["notification": Self.map(event.notification)]) { result in
-                if (result as? Bool) != true { event.display() }
+            let eventId = UUID().uuidString
+            self.foregroundEvents[eventId] = event
+            self.foregroundEventOrder.append(eventId)
+            while self.foregroundEventOrder.count > Self.maxForegroundEvents {
+                self.foregroundEvents.removeValue(forKey: self.foregroundEventOrder.removeFirst())
+            }
+            let args: [String: Any] = ["notification": Self.map(event.notification), "eventId": eventId]
+            self.channel.invokeMethod("foregroundWillDisplay", arguments: args) { [weak self] result in
+                if (result as? Bool) != true {
+                    _ = self?.takeForegroundEvent(eventId)
+                    event.display()
+                }
             }
         }
     }

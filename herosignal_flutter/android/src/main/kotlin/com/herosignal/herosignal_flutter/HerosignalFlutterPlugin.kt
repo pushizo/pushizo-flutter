@@ -30,6 +30,7 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.PluginRegistry
+import java.util.UUID
 
 /** Flutter → Android SDK köprüsü (MethodChannel + EventChannel). */
 class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, ActivityAware, EventChannel.StreamHandler, PluginRegistry.RequestPermissionsResultListener {
@@ -44,7 +45,17 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
     /** Dart tarafında `setForegroundWillDisplayHandler` kayıtlı mı. */
     @Volatile private var foregroundHandlerEnabled = false
 
-    private val clickListener: (HsClickEvent) -> Unit = { e -> emit(mapOf("type" to "click", "notification" to e.notification.toMap(), "actionId" to e.actionId, "url" to e.url)) }
+    /**
+     * Dart EventChannel dinleyicisi bağlanmadan gelen bildirim tıklamaları (soğuk başlangıç: yerel SDK tıklamayı
+     * Dart `initialize` ile eklenen dinleyiciye hemen teslim eder, akış henüz dinlenmiyor olabilir). Yalnızca ana iş
+     * parçacığında erişilir; dinleyici bağlanınca sırayla iletilir.
+     */
+    private val pendingClicks = ArrayList<Map<String, Any?>>()
+
+    /** Dart gösterim kararını beklerken ertelenen ön plan olayları (Dart `display()` için); yalnızca ana iş parçacığında. */
+    private val foregroundEvents = LinkedHashMap<String, HsForegroundEvent>()
+
+    private val clickListener: (HsClickEvent) -> Unit = { e -> emitClick(mapOf("type" to "click", "notification" to e.notification.toMap(), "actionId" to e.actionId, "url" to e.url)) }
     private val foregroundListener: (HsForegroundEvent) -> Unit = { e ->
         emit(mapOf("type" to "foreground", "notification" to e.notification.toMap()))
         if (foregroundHandlerEnabled) askDartToDisplay(e)
@@ -52,15 +63,24 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
 
     /**
      * Gösterim kararı Dart işleyicisine sorulur: yerel gösterim önce ertelenir (preventDefault), Dart
-     * `preventDefault()` çağırmadıysa veya çağrı başarısız olursa `display()` ile gösterilir.
+     * `preventDefault()` çağırmadıysa veya çağrı başarısız olursa `display()` ile gösterilir. Engellenen olay
+     * `eventId` ile saklanır; Dart sonradan `event.display()` çağırırsa (`displayForegroundNotification`) gösterilir.
      */
     private fun askDartToDisplay(e: HsForegroundEvent) {
         e.preventDefault()
         main.post {
-            channel.invokeMethod("foregroundWillDisplay", mapOf("notification" to e.notification.toMap()), object : MethodChannel.Result {
-                override fun success(result: Any?) { if (result != true) e.display() }
-                override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) { e.display() }
-                override fun notImplemented() { e.display() }
+            val eventId = UUID.randomUUID().toString()
+            foregroundEvents[eventId] = e
+            while (foregroundEvents.size > MAX_FOREGROUND_EVENTS) foregroundEvents.remove(foregroundEvents.keys.first())
+            val args = mapOf("notification" to e.notification.toMap(), "eventId" to eventId)
+            channel.invokeMethod("foregroundWillDisplay", args, object : MethodChannel.Result {
+                override fun success(result: Any?) { if (result != true) displayNow() }
+                override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) = displayNow()
+                override fun notImplemented() = displayNow()
+                private fun displayNow() {
+                    foregroundEvents.remove(eventId)
+                    e.display()
+                }
             })
         }
     }
@@ -120,6 +140,7 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
         HeroSignal.InAppMessages.setRenderer(null)
         inAppHandles.values.toList().forEach { it.closed() }
         inAppHandles.clear()
+        foregroundEvents.clear()
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -127,6 +148,8 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
             when (call.method) {
                 "initialize" -> {
                     val ctx = context ?: return result.error("NO_CONTEXT", "context yok", null)
+                    // Yerel SDK yapılandırmayı (appId, apiUrl, onay zorunluluğu) kalıcı saklar; uygulama kapalıyken gelen
+                    // mesaj/tıklama/kapatma, Dart motoru başlamadan da bu yapılandırmayla işlenir (HeroSignal.ensureInitialized).
                     HeroSignal.initialize(
                         ctx,
                         call.argument<String>("appId")!!,
@@ -154,6 +177,8 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
                 "addAliases" -> { HeroSignal.User.addAliases(call.argument<Map<String, String>>("aliases") ?: emptyMap()); result.success(null) }
                 "removeAlias" -> { HeroSignal.User.removeAlias(call.argument<String>("label")!!); result.success(null) }
                 "setForegroundHandlerEnabled" -> { foregroundHandlerEnabled = call.argument<Boolean>("enabled") ?: false; result.success(null) }
+                // Dart `HeroSignalForegroundEvent.display()`: ertelenen bildirim şimdi gösterilir (tek sefer; yerel SDK yineleneni yok sayar).
+                "displayForegroundNotification" -> { call.argument<String>("eventId")?.let { foregroundEvents.remove(it) }?.display(); result.success(null) }
                 "setLanguage" -> { HeroSignal.User.setLanguage(call.argument<String>("code")!!); result.success(null) }
                 "getExternalId" -> result.success(HeroSignal.User.externalId)
                 "getUserId" -> result.success(HeroSignal.User.id)
@@ -169,7 +194,8 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
                 }
                 // Bildirim tepsisi
                 "clearAll" -> { HeroSignal.Notifications.clearAll(); result.success(null) }
-                "removeNotification" -> { HeroSignal.Notifications.removeNotification(call.argument<Int>("id")!!); result.success(null) }
+                // Android tepsi kimliği; yalnızca iOS kimliği (`identifier`) verildiyse Android'de etkisizdir.
+                "removeNotification" -> { call.argument<Int>("id")?.let { HeroSignal.Notifications.removeNotification(it) }; result.success(null) }
                 "removeGroupedNotifications" -> { HeroSignal.Notifications.removeGroupedNotifications(call.argument<String>("group")!!); result.success(null) }
                 "sendEvent" -> {
                     HeroSignal.Session.sendEvent(call.argument<String>("name")!!, call.argument<Map<String, Any?>>("properties") ?: emptyMap(), call.argument<Double>("value"))
@@ -244,7 +270,13 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
         return true
     }
 
-    override fun onListen(arguments: Any?, events: EventChannel.EventSink?) { sink = events }
+    override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+        sink = events
+        if (events == null || pendingClicks.isEmpty()) return
+        val buffered = pendingClicks.toList()
+        pendingClicks.clear()
+        buffered.forEach { events.success(it) }
+    }
     override fun onCancel(arguments: Any?) { sink = null }
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) { activity = binding.activity; activityBinding = binding; binding.addRequestPermissionsResultListener(this) }
@@ -253,6 +285,19 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
     override fun onDetachedFromActivity() { activityBinding?.removeRequestPermissionsResultListener(this); activity = null; activityBinding = null }
 
     private fun emit(payload: Map<String, Any?>) { main.post { sink?.success(payload) } }
+
+    /** Tıklama olayı: akış henüz dinlenmiyorsa kaybolmaması için dinleyici bağlanana kadar bekletilir. */
+    private fun emitClick(payload: Map<String, Any?>) {
+        main.post {
+            val events = sink
+            if (events != null) {
+                events.success(payload)
+            } else {
+                if (pendingClicks.size >= MAX_PENDING_CLICKS) pendingClicks.removeAt(0)
+                pendingClicks.add(payload)
+            }
+        }
+    }
 
     private fun logLevel(name: String?): HsLog.Level = when (name) {
         "none" -> HsLog.Level.NONE
@@ -272,4 +317,9 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
     private fun HsMessageCategory.toMap() = mapOf("key" to key, "name" to name, "description" to description, "channels" to channels, "defaultOptedIn" to defaultOptedIn)
     private fun HsPreferencesResult.toMap() = mapOf("data" to preferences.map { it.toMap() }, "categories" to categories.map { it.toMap() })
     private fun HsPushSubscriptionState.toMap() = mapOf("id" to id, "token" to token, "optedIn" to optedIn, "permission" to permission)
+
+    private companion object {
+        const val MAX_PENDING_CLICKS = 20
+        const val MAX_FOREGROUND_EVENTS = 32
+    }
 }

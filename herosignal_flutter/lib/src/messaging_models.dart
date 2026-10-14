@@ -184,6 +184,12 @@ class HeroSignalInAppClickEvent {
       );
 }
 
+/// In-app düğme tıklaması dinleyicisi (`HeroSignal.InAppMessages.addClickListener`).
+typedef HeroSignalInAppClickListener = void Function(HeroSignalInAppClickEvent event);
+
+/// In-app yaşam döngüsü dinleyicisi (`HeroSignal.InAppMessages.addLifecycleListener`).
+typedef HeroSignalInAppLifecycleListener = void Function(HeroSignalInAppLifecycleEvent event);
+
 /// In-app yaşam döngüsü aşaması.
 enum HeroSignalInAppLifecycle { willDisplay, didDisplay, willDismiss, didDismiss }
 

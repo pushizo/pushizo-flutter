@@ -51,18 +51,31 @@ typedef HeroSignalPermissionObserver = void Function(bool granted);
 /// Ön plan gösterim kararı işleyicisi.
 typedef HeroSignalForegroundWillDisplayHandler = FutureOr<void> Function(HeroSignalForegroundEvent event);
 
-/// Ön planda gelen bildirim; [preventDefault] gösterimi engeller.
+/// Ön planda gelen bildirim; [preventDefault] gösterimi engeller. Karar sonradan verilecekse önce [preventDefault],
+/// ardından gerekirse [display] çağrılır (iOS'ta en fazla 25 sn içinde).
 class HeroSignalForegroundEvent {
-  HeroSignalForegroundEvent(this.notification);
+  HeroSignalForegroundEvent(this.notification, {String? eventId}) : _eventId = eventId;
 
   final HeroSignalNotification notification;
+
+  /// Yerel taraftaki ertelenmiş olayın kimliği ([display] için).
+  final String? _eventId;
   bool _prevented = false;
+  bool _displayed = false;
 
   /// Gösterim engellendi mi.
   bool get prevented => _prevented;
 
   /// Bildirimin sistem tarafından gösterilmesini engeller.
   void preventDefault() => _prevented = true;
+
+  /// Bildirimi şimdi gösterir (yalnızca bir kez; [preventDefault] sonrasında da çalışır).
+  Future<void> display() async {
+    final eventId = _eventId;
+    if (_displayed || eventId == null) return;
+    _displayed = true;
+    await HeroSignal._channel.invokeMethod<void>('displayForegroundNotification', {'eventId': eventId});
+  }
 }
 
 /// Bildirim tıklaması.
