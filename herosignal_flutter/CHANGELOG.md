@@ -1,5 +1,9 @@
 ## 0.1.0
 
+- iOS Live Activities (ADR-0024): `LiveActivities.setupDefaultLiveActivity()` ve `startDefaultLiveActivity(activityId, attributes, contentState)` (genel `HeroSignalDefaultLiveActivityAttributes` türü); girdi Dart'ta doğrulanır (`ArgumentError`), yerel hatalar `PlatformException` (`PLATFORM_NOT_SUPPORTED`, `NOT_READY`, `INVALID_ARGUMENT`, `LIVE_ACTIVITY_FAILED`); Android'de `PLATFORM_NOT_SUPPORTED`.
+
+- JWT ile kimlik doğrulama (ADR-0023 §9): `login(id, jwt: …)`, `updateUserJwt`; belirteç yerel SDK'da saklanır ve `Authorization: Bearer` başlığıyla gider, `logout` ile silinir.
+
 - Soğuk başlangıç: yapılandırma yerelde kalıcı; uygulama kapalıyken received/opened/dismissed kaybolmaz, tıklamalar clickStream dinlenene kadar bekletilir. Ön plan olayında `display()`, `pushSubscription.token`, `InAppMessages.addClickListener/addLifecycleListener` (+ remove), iOS `removeNotificationByIdentifier`.
 
 - Kullanıcı tercihleri (`User.getPreferences/setPreferences`), in-app `variantId` ve `pushPrompt`/`outcome` aksiyon türleri (Faz 12, ADR-0019).

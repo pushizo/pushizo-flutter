@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -46,6 +47,111 @@ void main() {
     expect(calls[0].arguments, {'externalId': 'u1', 'identityHash': 'h'});
     expect(calls[1].arguments, {'tags': {'plan': 'pro'}});
     expect(calls.last.arguments, {'name': 'purchase', 'properties': {'sku': 'A1'}, 'value': 49.9});
+  });
+
+  group('JWT ile kimlik doğrulama', () {
+    test('login JWT\'yi yalnızca yöntem argümanı olarak yerel SDK\'ya iletir', () async {
+      await HeroSignal.login('u1', jwt: 'h.p.s');
+      await HeroSignal.login('u2', identityHash: 'h', jwt: 'h.p.s2');
+      expect(calls.map((c) => c.method).toList(), ['login', 'login']);
+      expect(calls[0].arguments, {'externalId': 'u1', 'identityHash': null, 'jwt': 'h.p.s'});
+      expect(calls[1].arguments, {'externalId': 'u2', 'identityHash': 'h', 'jwt': 'h.p.s2'});
+    });
+
+    test('JWT verilmezse argümanlar eski sözleşmeyle aynıdır', () async {
+      await HeroSignal.login('u1');
+      expect(calls.single.arguments, {'externalId': 'u1', 'identityHash': null});
+    });
+
+    test('updateUserJwt ve logout platforma iletilir', () async {
+      await HeroSignal.updateUserJwt('h.p.s3');
+      await HeroSignal.logout();
+      expect(calls.map((c) => c.method).toList(), ['updateUserJwt', 'logout']);
+      expect(calls[0].arguments, {'jwt': 'h.p.s3'});
+      expect(calls[1].arguments, isNull);
+    });
+
+    test('yerel SDK hatası (giriş yok / kanıt eksik) PlatformException olarak döner', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        if (call.method == 'updateUserJwt') {
+          throw PlatformException(code: 'HS_ERROR', message: 'Önce login ile kullanıcı kimliklendirilmeli');
+        }
+        if (call.method == 'login') {
+          throw PlatformException(code: 'HS_ERROR', message: "Bu app için kimlik JWT'si zorunlu");
+        }
+        return null;
+      });
+      await expectLater(HeroSignal.updateUserJwt('h.p.s'), throwsA(isA<PlatformException>()));
+      await expectLater(HeroSignal.login('u1', identityHash: 'h'), throwsA(isA<PlatformException>()));
+    });
+  });
+
+  group('Live Activities (iOS)', () {
+    test('setup ve start çağrıları argümanlarıyla platforma iletilir', () async {
+      await HeroSignal.LiveActivities.setupDefaultLiveActivity();
+      await HeroSignal.LiveActivities.startDefaultLiveActivity(
+        'order_42:a-b.c',
+        {'title': 'Sipariş #42', 'count': 2},
+        {'status': 'Yolda', 'eta': 12.5, 'late': false},
+      );
+      expect(calls.map((c) => c.method).toList(), ['setupDefaultLiveActivity', 'startDefaultLiveActivity']);
+      expect(calls[0].arguments, isNull);
+      expect(calls[1].arguments, {
+        'activityId': 'order_42:a-b.c',
+        'attributes': {'title': 'Sipariş #42', 'count': 2},
+        'contentState': {'status': 'Yolda', 'eta': 12.5, 'late': false},
+      });
+    });
+
+    test('geçersiz kimlik, anahtar ve değerler platforma gitmeden ArgumentError fırlatır', () {
+      final live = HeroSignal.LiveActivities;
+      expect(() => live.startDefaultLiveActivity('', {}, {}), throwsArgumentError);
+      expect(() => live.startDefaultLiveActivity('a' * 101, {}, {}), throwsArgumentError);
+      expect(() => live.startDefaultLiveActivity('order 42', {}, {}), throwsArgumentError);
+      expect(() => live.startDefaultLiveActivity('order_42', {'herosignal': 'x'}, {}), throwsArgumentError);
+      expect(() => live.startDefaultLiveActivity('order_42', {'k' * 65: 'x'}, {}), throwsArgumentError);
+      expect(() => live.startDefaultLiveActivity('order_42', {'': 'x'}, {}), throwsArgumentError);
+      expect(() => live.startDefaultLiveActivity('order_42', {}, {'eta': double.nan}), throwsArgumentError);
+      expect(() => live.startDefaultLiveActivity('order_42', {}, {'eta': double.infinity}), throwsArgumentError);
+      expect(() => live.startDefaultLiveActivity('order_42', {'nested': <String, Object>{'a': 1}}, {}), throwsArgumentError);
+      expect(() => live.startDefaultLiveActivity('order_42', {'list': <Object>[1]}, {}), throwsArgumentError);
+      expect(calls, isEmpty);
+    });
+
+    test('yerel hata kodu (Android PLATFORM_NOT_SUPPORTED, iOS LIVE_ACTIVITY_FAILED) PlatformException olarak döner', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        if (call.method == 'setupDefaultLiveActivity') {
+          throw PlatformException(code: 'PLATFORM_NOT_SUPPORTED', message: "Live Activities yalnızca iOS'ta desteklenir");
+        }
+        throw PlatformException(code: 'LIVE_ACTIVITY_FAILED', message: 'Live Activities bu cihazda kapalı');
+      });
+      await expectLater(
+        HeroSignal.LiveActivities.setupDefaultLiveActivity(),
+        throwsA(isA<PlatformException>().having((e) => e.code, 'code', 'PLATFORM_NOT_SUPPORTED')),
+      );
+      await expectLater(
+        HeroSignal.LiveActivities.startDefaultLiveActivity('order_42', {'title': 'x'}, {'status': 'y'}),
+        throwsA(isA<PlatformException>().having((e) => e.code, 'code', 'LIVE_ACTIVITY_FAILED')),
+      );
+    });
+
+    test('yerel köprüler: iOS SDK çağrıları ve Android PLATFORM_NOT_SUPPORTED', () {
+      // Yerel kod bu ortamda derlenemediğinden sözleşme kaynak metni üzerinden doğrulanır (CRLF normalize edilir).
+      String read(String path) => File(path).readAsStringSync().replaceAll('\r\n', '\n');
+      final swift = read('ios/Classes/HerosignalFlutterPlugin.swift');
+      expect(swift, contains('case "setupDefaultLiveActivity":'));
+      expect(swift, contains('try HeroSignal.LiveActivities.setupDefaultLiveActivity()'));
+      expect(swift, contains('try HeroSignal.LiveActivities.startDefaultLiveActivity(activityId:'));
+      expect(swift, contains('catch let error as HSLiveActivityError'));
+      expect(swift, contains('FlutterError(code: error.code, message: error.message, details: nil)'));
+      expect(swift, contains('"LIVE_ACTIVITY_FAILED"'));
+      final kt = read('android/src/main/kotlin/com/herosignal/herosignal_flutter/HerosignalFlutterPlugin.kt');
+      expect(kt, contains('"setupDefaultLiveActivity", "startDefaultLiveActivity" ->'));
+      expect(kt, contains('result.error(LIVE_ACTIVITY_UNSUPPORTED_CODE, LIVE_ACTIVITY_UNSUPPORTED_MESSAGE, null)'));
+      expect(kt, contains('LIVE_ACTIVITY_UNSUPPORTED_CODE = "PLATFORM_NOT_SUPPORTED"'));
+    });
   });
 
   test('alias çağrıları platforma iletilir', () async {

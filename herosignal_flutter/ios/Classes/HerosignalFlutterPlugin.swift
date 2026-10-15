@@ -75,7 +75,23 @@ public class HerosignalFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHand
             }
             result(nil)
         case "setConsentGiven": HeroSignal.setConsentGiven(args["given"] as? Bool ?? false); result(nil)
-        case "login": HeroSignal.login(args["externalId"] as? String ?? "", identityHash: args["identityHash"] as? String); result(nil)
+        case "login":
+            let identityHash = args["identityHash"] as? String
+            let jwt = args["jwt"] as? String
+            // Kanıt app'in kimlik doğrulama kipine uymuyorsa Dart'a hata döner (Android köprüsüyle aynı davranış).
+            if let message = HeroSignal.loginProofError(identityHash: identityHash, jwt: jwt) {
+                result(FlutterError(code: "HS_ERROR", message: message, details: nil)); return
+            }
+            HeroSignal.login(args["externalId"] as? String ?? "", identityHash: identityHash, jwt: jwt); result(nil)
+        case "updateUserJwt":
+            do {
+                try HeroSignal.updateUserJwt(args["jwt"] as? String ?? "")
+                result(nil)
+            } catch HSError.invalidArgument(let message) {
+                result(FlutterError(code: "INVALID_ARGUMENT", message: message, details: nil))
+            } catch {
+                result(FlutterError(code: "HS_ERROR", message: "\(error)", details: nil))
+            }
         case "logout": HeroSignal.logout(); result(nil)
         case "addTags": HeroSignal.User.addTags(args["tags"] as? [String: String] ?? [:]); result(nil)
         case "removeTags": HeroSignal.User.removeTags(args["keys"] as? [String] ?? []); result(nil)
@@ -156,6 +172,19 @@ public class HerosignalFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHand
                 HSPreferenceInput(category: $0["category"] as? String ?? "", channel: $0["channel"] as? String, optedIn: $0["optedIn"] as? Bool ?? false)
             }
             inbox(result) { Self.map(try await HeroSignal.User.setPreferences(inputs)) }
+        // Live Activities (ADR-0024): genel `HeroSignalDefaultLiveActivityAttributes` türü; değer doğrulaması yerel SDK'dadır.
+        case "setupDefaultLiveActivity":
+            liveActivity(result) { try HeroSignal.LiveActivities.setupDefaultLiveActivity() }
+        case "startDefaultLiveActivity":
+            guard let activityId = args["activityId"] as? String, !activityId.isEmpty else {
+                result(FlutterError(code: "INVALID_ARGUMENT", message: "activityId gerekli", details: nil)); return
+            }
+            guard let attributes = args["attributes"] as? [String: Any], let contentState = args["contentState"] as? [String: Any] else {
+                result(FlutterError(code: "INVALID_ARGUMENT", message: "attributes ve contentState nesne olmalı", details: nil)); return
+            }
+            liveActivity(result) {
+                try HeroSignal.LiveActivities.startDefaultLiveActivity(activityId: activityId, attributes: attributes, contentState: contentState)
+            }
         default: result(FlutterMethodNotImplemented)
         }
     }
@@ -261,6 +290,18 @@ public class HerosignalFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHand
             } catch {
                 DispatchQueue.main.async { result(FlutterError(code: "NOT_READY", message: "\(error)", details: nil)) }
             }
+        }
+    }
+
+    /// Live Activity çağrısı: `HSLiveActivityError` kodu ve mesajı aynen iletilir; beklenmeyen hata `LIVE_ACTIVITY_FAILED`.
+    private func liveActivity(_ result: FlutterResult, _ body: () throws -> Void) {
+        do {
+            try body()
+            result(nil)
+        } catch let error as HSLiveActivityError {
+            result(FlutterError(code: error.code, message: error.message, details: nil))
+        } catch {
+            result(FlutterError(code: "LIVE_ACTIVITY_FAILED", message: error.localizedDescription, details: nil))
         }
     }
 

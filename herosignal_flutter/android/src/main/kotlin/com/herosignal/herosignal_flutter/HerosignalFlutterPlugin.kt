@@ -169,7 +169,12 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
                     result.success(null)
                 }
                 "setConsentGiven" -> { HeroSignal.setConsentGiven(call.argument<Boolean>("given") ?: false); result.success(null) }
-                "login" -> { HeroSignal.login(call.argument<String>("externalId")!!, call.argument<String>("identityHash")); result.success(null) }
+                "login" -> {
+                    HeroSignal.login(call.argument<String>("externalId")!!, call.argument<String>("identityHash"), call.argument<String>("jwt"))
+                    result.success(null)
+                }
+                // Boş belirteç → INVALID_ARGUMENT; giriş yoksa HS_ERROR (yerel SDK IllegalStateException).
+                "updateUserJwt" -> { HeroSignal.updateUserJwt(call.argument<String>("jwt").orEmpty()); result.success(null) }
                 "logout" -> { HeroSignal.logout(); result.success(null) }
                 "addTags" -> { HeroSignal.User.addTags(call.argument<Map<String, String>>("tags") ?: emptyMap()); result.success(null) }
                 "removeTags" -> { HeroSignal.User.removeTags(call.argument<List<String>>("keys") ?: emptyList()); result.success(null) }
@@ -233,6 +238,9 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
                     }
                     HeroSignal.User.setPreferences(inputs, reply(result) { it.toMap() })
                 }
+                // Live Activities yalnızca iOS'ta vardır (ADR-0024); Android'de sessizce başarılı dönülmez.
+                "setupDefaultLiveActivity", "startDefaultLiveActivity" ->
+                    result.error(LIVE_ACTIVITY_UNSUPPORTED_CODE, LIVE_ACTIVITY_UNSUPPORTED_MESSAGE, null)
                 else -> result.notImplemented()
             }
         } catch (e: IllegalArgumentException) {
@@ -321,5 +329,7 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
     private companion object {
         const val MAX_PENDING_CLICKS = 20
         const val MAX_FOREGROUND_EVENTS = 32
+        const val LIVE_ACTIVITY_UNSUPPORTED_CODE = "PLATFORM_NOT_SUPPORTED"
+        const val LIVE_ACTIVITY_UNSUPPORTED_MESSAGE = "Live Activities yalnızca iOS'ta desteklenir"
     }
 }
