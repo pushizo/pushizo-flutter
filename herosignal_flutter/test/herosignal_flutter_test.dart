@@ -154,6 +154,95 @@ void main() {
     });
   });
 
+  test('web başlatma seçenekleri yalnızca verildiğinde iletilir', () async {
+    await HeroSignal.initialize(
+      'app_1',
+      web: const HeroSignalWebOptions(serviceWorkerPath: '/sw/HeroSignalSDKWorker.js', allowLocalhostAsSecureOrigin: true),
+    );
+    expect(calls.single.arguments, {
+      'appId': 'app_1',
+      'apiUrl': 'https://api.herosignal.dev',
+      'requiresPrivacyConsent': false,
+      'logLevel': 'warn',
+      'web': {'serviceWorkerPath': '/sw/HeroSignalSDKWorker.js', 'allowLocalhostAsSecureOrigin': true},
+    });
+  });
+
+  group('Konum', () {
+    test('setShared, isShared ve requestPermission platforma iletilir', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return switch (call.method) {
+          'getLocationShared' => true,
+          'requestLocationPermission' => true,
+          _ => null,
+        };
+      });
+      await HeroSignal.Location.setShared(true);
+      expect(await HeroSignal.Location.isShared, isTrue);
+      expect(await HeroSignal.Location.requestPermission(rationale: 'Yakındaki mağazalar için'), isTrue);
+      await HeroSignal.Location.requestPermission();
+      await HeroSignal.Location.setShared(false);
+      expect(calls.map((c) => c.method).toList(), [
+        'setLocationShared',
+        'getLocationShared',
+        'requestLocationPermission',
+        'requestLocationPermission',
+        'setLocationShared',
+      ]);
+      expect(calls[0].arguments, {'shared': true});
+      expect(calls[1].arguments, isNull);
+      expect(calls[2].arguments, {'rationale': 'Yakındaki mağazalar için'});
+      expect(calls[3].arguments, {'rationale': null});
+      expect(calls[4].arguments, {'shared': false});
+    });
+
+    test('yerel sonuç yoksa false döner; yerel hata PlatformException olarak iletilir', () async {
+      expect(await HeroSignal.Location.isShared, isFalse);
+      expect(await HeroSignal.Location.requestPermission(), isFalse);
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        throw PlatformException(code: 'HS_ERROR', message: 'Konum izni isteği zaten sürüyor');
+      });
+      await expectLater(
+        HeroSignal.Location.requestPermission(),
+        throwsA(isA<PlatformException>().having((e) => e.code, 'code', 'HS_ERROR')),
+      );
+    });
+
+    test('yerel köprüler: Android izin akışı ve iOS SDK çağrıları', () {
+      // Yerel kod bu ortamda derlenemediğinden sözleşme kaynak metni üzerinden doğrulanır (CRLF normalize edilir).
+      String read(String path) => File(path).readAsStringSync().replaceAll('\r\n', '\n');
+      final kt = read('android/src/main/kotlin/com/herosignal/herosignal_flutter/HerosignalFlutterPlugin.kt');
+      expect(kt, contains('"setLocationShared" -> { HeroSignal.Location.setShared(call.argument<Boolean>("shared") ?: false)'));
+      expect(kt, contains('"getLocationShared" -> result.success(HeroSignal.Location.isShared)'));
+      expect(kt, contains('"requestLocationPermission" -> requestLocationPermission(call.argument<String>("rationale"), result)'));
+      // 1) izin varsa onPermissionResult + true; 2) manifest izinleri; 3) Activity yoksa false.
+      expect(kt, contains('if (HeroSignal.Location.permissionGranted) {\n            HeroSignal.Location.onPermissionResult()\n            result.success(true)'));
+      expect(kt, contains('PackageManager.GET_PERMISSIONS'));
+      expect(kt, contains('listOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)'));
+      expect(kt, contains('val act = activity ?: return result.success(false)'));
+      // 4) SDK string kaynaklarıyla açıklama diyaloğu; vazgeçme false.
+      expect(kt, contains('AlertDialog.Builder(act)'));
+      expect(kt, contains('com.herosignal.sdk.R.string.hs_location_rationale_title'));
+      expect(kt, contains('rationale?.takeIf { it.isNotBlank() } ?: act.getString(com.herosignal.sdk.R.string.hs_location_rationale_message)'));
+      expect(kt, contains('com.herosignal.sdk.R.string.hs_location_rationale_continue'));
+      expect(kt, contains('com.herosignal.sdk.R.string.hs_location_rationale_not_now'));
+      expect(kt, contains('.setOnDismissListener { if (!proceeded) result.success(false) }'));
+      // 5) sistem izni SDK istek koduyla; sonuçta onPermissionResult ve permissionGranted.
+      expect(kt, contains('act.requestPermissions(permissions.toTypedArray(), HeroSignal.Location.PERMISSION_REQUEST_CODE)'));
+      expect(kt, contains('binding.addRequestPermissionsResultListener(this)'));
+      expect(kt, contains(
+        'if (requestCode == HeroSignal.Location.PERMISSION_REQUEST_CODE) {\n'
+        '            HeroSignal.Location.onPermissionResult()\n'
+        '            pendingLocationPermission?.success(HeroSignal.Location.permissionGranted)',
+      ));
+      final swift = read('ios/Classes/HerosignalFlutterPlugin.swift');
+      expect(swift, contains('case "setLocationShared": HeroSignal.Location.setShared(args["shared"] as? Bool ?? false); result(nil)'));
+      expect(swift, contains('case "getLocationShared": result(HeroSignal.Location.isShared)'));
+      expect(swift, contains('HeroSignal.Location.requestPermission(rationale: args["rationale"] as? String) { granted in result(granted) }'));
+    });
+  });
+
   test('alias çağrıları platforma iletilir', () async {
     await HeroSignal.User.addAlias('crm_id', '42');
     await HeroSignal.User.addAliases({'shop_id': '7', 'erp_id': 'x'});

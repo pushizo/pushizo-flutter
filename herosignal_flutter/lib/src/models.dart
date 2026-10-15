@@ -20,6 +20,26 @@ class HeroSignalPushSubscriptionState {
   String toString() => 'HeroSignalPushSubscriptionState(id: $id, optedIn: $optedIn, permission: $permission)';
 }
 
+/// Yalnızca Flutter web'de kullanılan başlatma seçenekleri (Web SDK `init` seçeneklerine aynen iletilir).
+class HeroSignalWebOptions {
+  const HeroSignalWebOptions({this.serviceWorkerPath, this.serviceWorkerScope, this.allowLocalhostAsSecureOrigin});
+
+  /// Service worker yolu (site origin'inde); verilmezse dashboard ayarı, o da yoksa `/HeroSignalSDKWorker.js`.
+  final String? serviceWorkerPath;
+
+  /// Service worker kapsamı; verilmezse dashboard ayarı veya service worker'ın bulunduğu dizin.
+  final String? serviceWorkerScope;
+
+  /// Güvenli olmayan (HTTP) localhost adreslerinde Web Push'a izin verir (yalnızca geliştirme).
+  final bool? allowLocalhostAsSecureOrigin;
+
+  Map<String, Object?> toMap() => {
+        'serviceWorkerPath': ?serviceWorkerPath,
+        'serviceWorkerScope': ?serviceWorkerScope,
+        'allowLocalhostAsSecureOrigin': ?allowLocalhostAsSecureOrigin,
+      };
+}
+
 /// Bildirim içeriği.
 class HeroSignalNotification {
   const HeroSignalNotification({this.title, this.body, this.url, this.deliveryId, this.messageId, this.data = const {}, this.androidNotificationId});

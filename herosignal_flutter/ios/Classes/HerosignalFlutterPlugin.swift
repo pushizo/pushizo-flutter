@@ -172,6 +172,12 @@ public class HerosignalFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHand
                 HSPreferenceInput(category: $0["category"] as? String ?? "", channel: $0["channel"] as? String, optedIn: $0["optedIn"] as? Bool ?? false)
             }
             inbox(result) { Self.map(try await HeroSignal.User.setPreferences(inputs)) }
+        // Konum paylaşımı (v2 Faz 17b): açıklama uyarısı, When In Use izni ve gönderim kuralları yerel SDK'dadır.
+        case "setLocationShared": HeroSignal.Location.setShared(args["shared"] as? Bool ?? false); result(nil)
+        case "getLocationShared": result(HeroSignal.Location.isShared)
+        case "requestLocationPermission":
+            // Tamamlama ana iş parçacığında çağrılır; reddedilmiş/kısıtlı izin veya eksik Info.plist anahtarı → false.
+            HeroSignal.Location.requestPermission(rationale: args["rationale"] as? String) { granted in result(granted) }
         // Live Activities (ADR-0024): genel `HeroSignalDefaultLiveActivityAttributes` türü; değer doğrulaması yerel SDK'dadır.
         case "setupDefaultLiveActivity":
             liveActivity(result) { try HeroSignal.LiveActivities.setupDefaultLiveActivity() }

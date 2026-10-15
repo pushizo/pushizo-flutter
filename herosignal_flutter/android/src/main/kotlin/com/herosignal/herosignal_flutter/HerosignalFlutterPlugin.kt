@@ -1,7 +1,11 @@
 package com.herosignal.herosignal_flutter
 
+import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import com.herosignal.sdk.HeroSignal
@@ -41,6 +45,8 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
     private var activityBinding: ActivityPluginBinding? = null
     private var sink: EventChannel.EventSink? = null
     private var pendingPermission: MethodChannel.Result? = null
+    /** Sistem konum izni sonucunu bekleyen Dart çağrısı (`requestLocationPermission`); yalnızca ana iş parçacığında. */
+    private var pendingLocationPermission: MethodChannel.Result? = null
     private val main = Handler(Looper.getMainLooper())
     /** Dart tarafında `setForegroundWillDisplayHandler` kayıtlı mı. */
     @Volatile private var foregroundHandlerEnabled = false
@@ -238,6 +244,10 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
                     }
                     HeroSignal.User.setPreferences(inputs, reply(result) { it.toMap() })
                 }
+                // Konum paylaşımı (v2 Faz 17b); gönderim, aralık ve rıza kuralları yerel SDK'dadır.
+                "setLocationShared" -> { HeroSignal.Location.setShared(call.argument<Boolean>("shared") ?: false); result.success(null) }
+                "getLocationShared" -> result.success(HeroSignal.Location.isShared)
+                "requestLocationPermission" -> requestLocationPermission(call.argument<String>("rationale"), result)
                 // Live Activities yalnızca iOS'ta vardır (ADR-0024); Android'de sessizce başarılı dönülmez.
                 "setupDefaultLiveActivity", "startDefaultLiveActivity" ->
                     result.error(LIVE_ACTIVITY_UNSUPPORTED_CODE, LIVE_ACTIVITY_UNSUPPORTED_MESSAGE, null)
@@ -270,7 +280,70 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
         }
     }
 
+    /**
+     * Konum izni: yerel SDK `requestPermission` sonucu bildirmediğinden akış köprüde yürütülür. İzin zaten varsa
+     * `true`; manifest'te konum izni yoksa veya Activity yoksa `false`. Aksi hâlde SDK string kaynaklarıyla açıklama
+     * diyaloğu gösterilir ("Şimdi değil"/iptal → `false`); "Devam" ile sistem izni `HeroSignal.Location.PERMISSION_REQUEST_CODE`
+     * koduyla istenir ve sonuç [onRequestPermissionsResult] içinde döner.
+     */
+    private fun requestLocationPermission(rationale: String?, result: MethodChannel.Result) {
+        if (HeroSignal.Location.permissionGranted) {
+            HeroSignal.Location.onPermissionResult()
+            result.success(true)
+            return
+        }
+        val act = activity ?: return result.success(false)
+        val permissions = declaredLocationPermissions(act)
+        if (permissions.isEmpty()) {
+            HsLog.w("konum izni istenemedi: uygulama manifest'inde ACCESS_COARSE_LOCATION/ACCESS_FINE_LOCATION yok")
+            result.success(false)
+            return
+        }
+        if (pendingLocationPermission != null) {
+            result.error("HS_ERROR", "Konum izni isteği zaten sürüyor", null)
+            return
+        }
+        act.runOnUiThread {
+            if (act.isFinishing || act.isDestroyed) {
+                result.success(false)
+                return@runOnUiThread
+            }
+            // Düğme işleyicisi diyalog kapanmadan önce çalışır; kapanış yalnızca "Devam" seçilmediyse false döndürür.
+            var proceeded = false
+            AlertDialog.Builder(act)
+                .setTitle(com.herosignal.sdk.R.string.hs_location_rationale_title)
+                .setMessage(rationale?.takeIf { it.isNotBlank() } ?: act.getString(com.herosignal.sdk.R.string.hs_location_rationale_message))
+                .setPositiveButton(com.herosignal.sdk.R.string.hs_location_rationale_continue) { _, _ ->
+                    proceeded = true
+                    pendingLocationPermission = result
+                    act.requestPermissions(permissions.toTypedArray(), HeroSignal.Location.PERMISSION_REQUEST_CODE)
+                }
+                .setNegativeButton(com.herosignal.sdk.R.string.hs_location_rationale_not_now, null)
+                .setOnDismissListener { if (!proceeded) result.success(false) }
+                .show()
+        }
+    }
+
+    /** Uygulama manifest'inde tanımlı konum izinleri (eklenti izin eklemez; arka plan konumu istenmez). */
+    private fun declaredLocationPermissions(ctx: Context): List<String> {
+        val pm = ctx.packageManager
+        val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pm.getPackageInfo(ctx.packageName, PackageManager.PackageInfoFlags.of(PackageManager.GET_PERMISSIONS.toLong()))
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getPackageInfo(ctx.packageName, PackageManager.GET_PERMISSIONS)
+        }
+        val requested = info.requestedPermissions?.toSet() ?: emptySet()
+        return LOCATION_PERMISSIONS.filter { it in requested }
+    }
+
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray): Boolean {
+        if (requestCode == HeroSignal.Location.PERMISSION_REQUEST_CODE) {
+            HeroSignal.Location.onPermissionResult()
+            pendingLocationPermission?.success(HeroSignal.Location.permissionGranted)
+            pendingLocationPermission = null
+            return true
+        }
         if (requestCode != HeroSignal.Notifications.PERMISSION_REQUEST_CODE) return false
         HeroSignal.Notifications.onPermissionResult()
         pendingPermission?.success(HeroSignal.Notifications.permission)
@@ -331,5 +404,6 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
         const val MAX_FOREGROUND_EVENTS = 32
         const val LIVE_ACTIVITY_UNSUPPORTED_CODE = "PLATFORM_NOT_SUPPORTED"
         const val LIVE_ACTIVITY_UNSUPPORTED_MESSAGE = "Live Activities yalnızca iOS'ta desteklenir"
+        val LOCATION_PERMISSIONS = listOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)
     }
 }
