@@ -257,6 +257,7 @@ public class HerosignalFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHand
 
     // MARK: In-app (Dart çizimi)
 
+    /// HTML içerikli mesajlar bu çizime gelmez: yerel SDK kendi yalıtılmış WKWebView'ında çizer (ADR-0027).
     public func show(_ message: HSInAppMessage, handle: HSInAppHandle) -> Bool {
         guard let data = try? JSONSerialization.data(withJSONObject: message.raw), let json = String(data: data, encoding: .utf8) else { return false }
         inAppHandles[message.id] = handle

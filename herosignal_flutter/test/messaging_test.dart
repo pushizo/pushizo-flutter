@@ -239,6 +239,69 @@ void main() {
     expect(unknown.dismissible, isTrue);
   });
 
+  List<Map<String, Object?>> carouselBlocks() => [
+        {
+          'type': 'carousel',
+          'id': 'steps',
+          'cards': [
+            {
+              'id': 'c1',
+              'title': 'Adım 1',
+              'body': 'Profilini tamamla',
+              'image_url': null,
+              'image_alt': null,
+              'button': {'id': 'b1', 'text': 'Başla', 'action': {'type': 'deeplink', 'url': 'myapp://profile'}},
+            },
+            {'id': 'c2', 'title': 'Adım 2', 'body': null, 'image_url': null, 'image_alt': null, 'button': null},
+            {
+              'id': 'c3',
+              'title': 'Adım 3',
+              'button': {'id': 'bad', 'text': 'Kötü', 'action': {'type': 'url', 'url': 'javascript:alert(1)'}},
+            },
+            {'title': 'Kimliksiz kart'},
+          ],
+        },
+        {'type': 'carousel', 'id': 'empty', 'cards': <Object?>[]},
+        {'type': 'button', 'id': 'close', 'text': 'Kapat', 'action': {'type': 'dismiss'}},
+      ];
+
+  test('in-app mesaj modeli: HTML içerik ve carousel bloğu', () {
+    final html = HeroSignalInAppMessage.fromMap(jsonDecode(jsonEncode({
+      'id': 'iam_h',
+      'display': {
+        'layout': 'banner_top',
+        'content_type': 'html',
+        'html': '<h1>Merhaba</h1>',
+        'html_height': 140,
+        'blocks': [
+          {'type': 'title', 'text': 'yok sayılır'},
+        ],
+      },
+    })) as Map<String, dynamic>);
+    expect(html.contentType, HeroSignalInAppContentType.html);
+    expect(html.html, '<h1>Merhaba</h1>');
+    expect(html.htmlHeight, 140);
+    expect(html.blocks, isEmpty);
+    // Eski sunucu yanıtı (content_type yok) → bloklar.
+    final legacy = HeroSignalInAppMessage.fromMap(message());
+    expect(legacy.contentType, HeroSignalInAppContentType.blocks);
+    expect(legacy.html, isNull);
+    expect(legacy.htmlHeight, isNull);
+
+    final json = message();
+    (json['display'] as Map)['blocks'] = carouselBlocks();
+    final m = HeroSignalInAppMessage.fromMap(jsonDecode(jsonEncode(json)) as Map<String, dynamic>);
+    expect(m.blocks.length, 2); // carousel ve düğme; kartsız carousel atlanır
+    final carousel = m.blocks.first as HeroSignalInAppCarousel;
+    expect(carousel.id, 'steps');
+    expect(carousel.cards.map((c) => c.id).toList(), ['c1', 'c2', 'c3']); // kimliksiz kart atlanır
+    expect(carousel.cards[0].body, 'Profilini tamamla');
+    expect(carousel.cards[0].button?.action.type, HeroSignalInAppActionType.deeplink);
+    expect(carousel.cards[1].button, isNull);
+    expect(carousel.cards[2].button, isNull); // geçersiz aksiyonlu kart düğmesi düşer, kart kalır
+    expect(m.buttons.map((b) => b.id).toList(), ['b1', 'close']);
+  });
+
   test('renk vektörleri yerel SDK ile aynı (sdk/testdata)', () {
     final vectors = jsonDecode(File('../../testdata/messaging-vectors.json').readAsStringSync()) as Map<String, dynamic>;
     String hex(Color c) => '#${c.toARGB32().toRadixString(16).padLeft(8, '0').toUpperCase()}';
@@ -346,6 +409,44 @@ void main() {
       await native('inAppClose', {'messageId': 'iam_1'});
       await tester.pumpAndSettle();
       expect(find.text('Merhaba Ayşe'), findsNothing);
+    });
+
+    testWidgets('carousel: kartlar, erişilebilirlik etiketi ve kart düğmesi', (tester) async {
+      await pumpApp(tester);
+      final json = message();
+      (json['display'] as Map)['blocks'] = [
+        {'type': 'title', 'text': 'Merhaba Ayşe'},
+        ...carouselBlocks(),
+      ];
+      expect(await native('inAppShow', {'json': jsonEncode(json)}), isTrue);
+      await tester.pumpAndSettle();
+      expect(find.text('Adım 1'), findsOneWidget);
+      expect(find.text('Adım 3'), findsOneWidget);
+      expect(find.text('Kötü'), findsNothing);
+      expect(find.bySemanticsLabel('Card 1/3: Adım 1'), findsOneWidget);
+      expect(find.bySemanticsLabel('Card 3/3: Adım 3'), findsOneWidget);
+      expect(tester.getSize(find.widgetWithText(FilledButton, 'Başla')).height, greaterThanOrEqualTo(48));
+
+      await tester.tap(find.text('Başla'));
+      await tester.pump();
+      expect(calls.last.method, 'inAppButtonClicked');
+      expect(calls.last.arguments, {'messageId': 'iam_1', 'buttonId': 'b1'});
+      await native('inAppClose', {'messageId': 'iam_1'});
+      await tester.pumpAndSettle();
+      expect(find.text('Adım 1'), findsNothing);
+    });
+
+    testWidgets('HTML mesaj Dart tarafında çizilmez (yerel SDK WebView çizer)', (tester) async {
+      await pumpApp(tester);
+      final shown = await native('inAppShow', {
+        'json': jsonEncode({
+          'id': 'iam_h',
+          'display': {'layout': 'modal', 'content_type': 'html', 'html': '<p>Merhaba</p>', 'blocks': <Object?>[]},
+        }),
+      });
+      expect(shown, isFalse);
+      await tester.pumpAndSettle();
+      expect(reported(), isEmpty);
     });
 
     testWidgets('özel arka planda metin kontrasta göre seçilir', (tester) async {

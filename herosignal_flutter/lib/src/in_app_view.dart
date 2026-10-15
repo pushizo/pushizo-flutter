@@ -76,8 +76,14 @@ class _InAppPresenter {
     }
   }
 
-  /// false → gösterilemedi (navigator yok veya başka mesaj açık).
+  /// false → gösterilemedi (navigator yok, başka mesaj açık veya HTML içerik).
   bool show(HeroSignalInAppMessage message) {
+    // HTML mesajlar güvenlik yalıtımı (ADR-0027) için yerel SDK'nın WebView'ında çizilir ve Dart'a gelmez; eski bir
+    // yerel SDK gönderirse Flutter widget'larıyla çizilmez (mesaj gösterilemedi sayılır).
+    if (message.contentType == HeroSignalInAppContentType.html) {
+      debugPrint('HeroSignal: HTML in-app mesajı yerel SDK tarafından çizilmeli; Dart çizimi atlandı.');
+      return false;
+    }
     if (_current != null) return false;
     final navigator = _navigator();
     if (navigator == null) return false;
@@ -284,17 +290,15 @@ class _InAppCard extends StatelessWidget {
         case HeroSignalInAppBody(:final text):
           children.add(Text(text, textAlign: align, style: (banner ? textTheme.bodyMedium : textTheme.bodyLarge)?.copyWith(color: textColor)));
         case final HeroSignalInAppButton button:
-          final bg = HeroSignalInAppColors.parse(button.backgroundColor) ?? (dark ? HeroSignalInAppColors.darkButton : HeroSignalInAppColors.lightButton);
-          final fg = HeroSignalInAppColors.parse(button.textColor) ?? HeroSignalInAppColors.contrastingText(bg);
-          children.add(FilledButton(
-            onPressed: () => onButton(button.id),
-            style: FilledButton.styleFrom(
-              backgroundColor: bg,
-              foregroundColor: fg,
-              minimumSize: const Size.fromHeight(48),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-            ),
-            child: Text(button.text, textAlign: TextAlign.center),
+          children.add(_inAppButton(button, dark, onButton));
+        case final HeroSignalInAppCarousel carousel:
+          children.add(_InAppCarousel(
+            carousel: carousel,
+            background: background,
+            textColor: textColor,
+            dark: dark,
+            banner: banner,
+            onButton: onButton,
           ));
       }
     }
@@ -341,6 +345,127 @@ class _InAppCard extends StatelessWidget {
               ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Mesaj düğmesi (blok ve carousel kartı ortak); en az 48 dp yükseklik.
+Widget _inAppButton(HeroSignalInAppButton button, bool dark, ValueChanged<String> onButton) {
+  final bg = HeroSignalInAppColors.parse(button.backgroundColor) ?? (dark ? HeroSignalInAppColors.darkButton : HeroSignalInAppColors.lightButton);
+  final fg = HeroSignalInAppColors.parse(button.textColor) ?? HeroSignalInAppColors.contrastingText(bg);
+  return FilledButton(
+    onPressed: () => onButton(button.id),
+    style: FilledButton.styleFrom(
+      backgroundColor: bg,
+      foregroundColor: fg,
+      minimumSize: const Size.fromHeight(48),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+    ),
+    child: Text(button.text, textAlign: TextAlign.center),
+  );
+}
+
+/// Carousel: yatay kaydırmalı kartlar. Birden fazla kart varsa kart genişliği alanın %85'idir (sonraki kart görünür);
+/// kartlar en uzun kart kadar yüksektir, düğmeler kart altına hizalanır. Ekran okuyucu kart başlığını
+/// "Kart 1/3: başlık" olarak okur.
+class _InAppCarousel extends StatelessWidget {
+  const _InAppCarousel({
+    required this.carousel,
+    required this.background,
+    required this.textColor,
+    required this.dark,
+    required this.banner,
+    required this.onButton,
+  });
+
+  final HeroSignalInAppCarousel carousel;
+  final Color background;
+  final Color textColor;
+  final bool dark;
+  final bool banner;
+  final ValueChanged<String> onButton;
+
+  /// Erişilebilirlik etiketi (Android/iOS SDK'larıyla aynı biçim).
+  static String cardLabel(String? languageCode, int index, int total, String title) =>
+      languageCode == 'tr' ? 'Kart $index/$total: $title' : 'Card $index/$total: $title';
+
+  @override
+  Widget build(BuildContext context) {
+    final total = carousel.cards.length;
+    final language = Localizations.maybeLocaleOf(context)?.languageCode;
+    final textTheme = Theme.of(context).textTheme;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = total > 1 ? constraints.maxWidth * 0.85 : constraints.maxWidth;
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (var i = 0; i < total; i++) ...[
+                  if (i > 0) const SizedBox(width: 12),
+                  SizedBox(width: width, child: _card(carousel.cards[i], cardLabel(language, i + 1, total, carousel.cards[i].title), textTheme)),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _card(HeroSignalInAppCarouselCard card, String label, TextTheme textTheme) {
+    final imageUrl = card.imageUrl;
+    final body = card.body;
+    final button = card.button;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: textColor.withValues(alpha: 0.2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (imageUrl != null) ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: SizedBox(
+                height: banner ? 80 : 140,
+                child: Image.network(
+                  imageUrl,
+                  fit: BoxFit.cover,
+                  semanticLabel: card.imageAlt,
+                  excludeFromSemantics: card.imageAlt == null,
+                  errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+          Semantics(
+            header: true,
+            label: label,
+            child: ExcludeSemantics(
+              child: Text(
+                card.title,
+                style: (banner ? textTheme.titleSmall : textTheme.titleMedium)?.copyWith(color: textColor, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ),
+          if (body != null) ...[
+            const SizedBox(height: 4),
+            Text(body, style: (banner ? textTheme.bodySmall : textTheme.bodyMedium)?.copyWith(color: textColor)),
+          ],
+          if (button != null) ...[
+            const Spacer(),
+            const SizedBox(height: 8),
+            _inAppButton(button, dark, onButton),
+          ],
+        ],
       ),
     );
   }

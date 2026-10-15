@@ -106,7 +106,10 @@ class HerosignalFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, 
         override fun onDidDismiss(event: HsInAppLifecycleEvent) = send("didDismiss", event)
     }
 
-    /** In-app mesajları Dart (Flutter widget'ları) çizer; tetik, sıklık, olay ve aksiyonlar yerel SDK'dadır. */
+    /**
+     * In-app mesajları Dart (Flutter widget'ları) çizer; tetik, sıklık, olay ve aksiyonlar yerel SDK'dadır. HTML içerikli
+     * mesajlar bu çizime gelmez: yerel SDK kendi yalıtılmış WebView'ında çizer (ADR-0027), köprü olayları yine dinleyicilere ulaşır.
+     */
     private val inAppHandles = HashMap<String, HsInAppHandle>()
     private val inAppRenderer = object : HsInAppRenderer {
         override fun show(message: HsInAppMessage, handle: HsInAppHandle): Boolean {
