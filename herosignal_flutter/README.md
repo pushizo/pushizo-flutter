@@ -4,6 +4,18 @@ HeroSignal Flutter SDK. Android (`sdk/android`) ve iOS (`sdk/ios`) yerel SDK'lar
 
 Kurulum ve kullanım: `docs/sdk/flutter.md`. Örnek uygulama: `examples/flutter-app`.
 
+## Web
+
+Web'de aynı Dart API'si sayfaya yüklenen Web SDK'ya köprülenir: `web/index.html` içine Flutter betiğinden önce
+`<script src="https://api.example.com/sdk-web/HeroSignalSDK.js"></script>` ekleyin. Web'de karşılığı olmayan yöntemler
+`PLATFORM_NOT_SUPPORTED` döner. Ayrıntılar: `docs/sdk/flutter.md` → "Flutter web".
+
+## Konum
+
+`HeroSignal.Location.requestPermission()`, `setShared(bool)`, `isShared` — yalnızca ön planda, kullanıcı izniyle;
+`setShared(false)` sunucudaki konumu siler. Android manifest ve iOS `NSLocationWhenInUseUsageDescription` gereksinimleri
+`docs/sdk/flutter.md` → "Konum".
+
 ## Live Activities (iOS)
 
 ```dart

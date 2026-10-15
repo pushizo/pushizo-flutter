@@ -1,5 +1,9 @@
 ## 0.1.0
 
+- Flutter web (ADR-0025): aynı Dart API'si sayfadaki Web SDK'ya köprülenir (`dart:js_interop`, Wasm uyumlu); `HeroSignalWebOptions` (service worker yolu/kapsamı); web'de karşılığı olmayan yöntemler `PLATFORM_NOT_SUPPORTED`.
+
+- Konum (ADR-0025): `Location.requestPermission({rationale})`, `setShared(bool)`, `isShared`; yalnızca ön plan, kapatınca sunucudaki konum silinir.
+
 - iOS Live Activities (ADR-0024): `LiveActivities.setupDefaultLiveActivity()` ve `startDefaultLiveActivity(activityId, attributes, contentState)` (genel `HeroSignalDefaultLiveActivityAttributes` türü); girdi Dart'ta doğrulanır (`ArgumentError`), yerel hatalar `PlatformException` (`PLATFORM_NOT_SUPPORTED`, `NOT_READY`, `INVALID_ARGUMENT`, `LIVE_ACTIVITY_FAILED`); Android'de `PLATFORM_NOT_SUPPORTED`.
 
 - JWT ile kimlik doğrulama (ADR-0023 §9): `login(id, jwt: …)`, `updateUserJwt`; belirteç yerel SDK'da saklanır ve `Authorization: Bearer` başlığıyla gider, `logout` ile silinir.

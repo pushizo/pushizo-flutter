@@ -16,7 +16,11 @@
 /// await HeroSignal.InAppMessages.addTrigger('level', 'gold');
 /// final page = await HeroSignal.Inbox.list(limit: 20);
 /// await HeroSignal.LiveActivities.setupDefaultLiveActivity(); // yalnızca iOS
+/// if (await HeroSignal.Location.requestPermission()) await HeroSignal.Location.setShared(true);
 /// ```
+///
+/// Flutter web'de çağrılar sayfaya yüklenen Web SDK'ya (`window.HeroSignal`) iletilir; web'de karşılığı olmayan
+/// yöntemler `PlatformException(code: 'PLATFORM_NOT_SUPPORTED')` döndürür (bkz. `docs/sdk/flutter.md` "Flutter web").
 library;
 
 // Statik ad alanları (User, Notifications…) eski sağlayıcı ile aynı API biçimini korur.
@@ -129,11 +133,13 @@ class HeroSignal {
   }
 
   /// SDK'yı başlatır. [requiresPrivacyConsent] true ise [setConsentGiven] çağrılana kadar ağ çağrısı yapılmaz.
+  /// [web] yalnızca Flutter web'de kullanılır (service worker yolu/kapsamı); Android ve iOS'ta yok sayılır.
   static Future<void> initialize(
     String appId, {
     String apiUrl = 'https://api.herosignal.dev',
     bool requiresPrivacyConsent = false,
     HeroSignalLogLevel logLevel = HeroSignalLogLevel.warn,
+    HeroSignalWebOptions? web,
   }) {
     _ensureHandler();
     return _channel.invokeMethod<void>('initialize', {
@@ -141,6 +147,7 @@ class HeroSignal {
       'apiUrl': apiUrl,
       'requiresPrivacyConsent': requiresPrivacyConsent,
       'logLevel': logLevel.name,
+      'web': ?web?.toMap(),
     });
   }
 
@@ -169,6 +176,7 @@ class HeroSignal {
   static const Inbox = _Inbox();
   static const Session = _Session();
   static const LiveActivities = _LiveActivities();
+  static const Location = _Location();
   static const Debug = _Debug();
 }
 
@@ -467,6 +475,26 @@ class _LiveActivities {
       }
     }
   }
+}
+
+/// Konum paylaşımı (v2 Faz 17b): yalnızca uygulama ön plandayken, oturum başında ve ön plana dönüşte en sık 5 dakikada
+/// bir yaklaşık konum push aboneliğine yazılır. İzin yoksa veya gizlilik onayı verilmemişse gönderilmez; tercih yerel
+/// SDK'da kalıcıdır. İlk konum sunucuda KVKK açık rıza kaydı sayılır; [setShared] `false` konumu ve rıza kaydını sildirir.
+class _Location {
+  const _Location();
+
+  /// Paylaşımı açar/kapatır (kalıcı). Açılırken izin varsa konum hemen gönderilir; izin için [requestPermission].
+  Future<void> setShared(bool shared) =>
+      HeroSignal._channel.invokeMethod<void>('setLocationShared', {'shared': shared});
+
+  /// Paylaşım açık mı (kalıcı tercih; izin durumundan bağımsız).
+  Future<bool> get isShared async => (await HeroSignal._channel.invokeMethod<bool>('getLocationShared')) ?? false;
+
+  /// Konum iznini ister: izin yoksa önce açıklama ([rationale]; verilmezse SDK'nın tr/en varsayılan metni), kullanıcı
+  /// devam ederse sistem istemi. İzin verildiyse (veya zaten varsa) `true`; reddedildi, vazgeçildi veya izin
+  /// tanımlanmadıysa (Android manifest / iOS `NSLocationWhenInUseUsageDescription`) `false`.
+  Future<bool> requestPermission({String? rationale}) async =>
+      (await HeroSignal._channel.invokeMethod<bool>('requestLocationPermission', {'rationale': rationale})) ?? false;
 }
 
 class _Debug {
