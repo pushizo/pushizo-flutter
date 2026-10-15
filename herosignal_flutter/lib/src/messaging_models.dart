@@ -5,6 +5,10 @@ part of '../herosignal_flutter.dart';
 /// In-app mesaj düzeni.
 enum HeroSignalInAppLayout { modal, bannerTop, bannerBottom, fullscreen }
 
+/// In-app içerik biçimi: Flutter widget'larıyla çizilen bloklar veya yerel SDK'nın yalıtılmış WebView'ında çizilen
+/// HTML (ADR-0027). HTML mesajlar Dart'a gönderilmez; yerel SDK kendisi gösterir.
+enum HeroSignalInAppContentType { blocks, html }
+
 /// In-app düğme aksiyonu türü. `pushPrompt` yerel bildirim izni istemini açar, `outcome` olay gönderir (ikisi de yerel SDK'da uygulanır).
 enum HeroSignalInAppActionType { dismiss, url, deeplink, tags, pushPrompt, outcome }
 
@@ -83,6 +87,8 @@ sealed class HeroSignalInAppBlock {
           backgroundColor: _nonEmpty(map['background_color']),
           textColor: _nonEmpty(map['text_color']),
         );
+      case 'carousel':
+        return HeroSignalInAppCarousel._fromMap(map);
       default:
         return null;
     }
@@ -114,6 +120,53 @@ class HeroSignalInAppButton extends HeroSignalInAppBlock {
   final String? textColor;
 }
 
+/// Carousel kartı; [button] geçersiz aksiyonlu ise null (kart yine gösterilir).
+class HeroSignalInAppCarouselCard {
+  const HeroSignalInAppCarouselCard({required this.id, required this.title, this.body, this.imageUrl, this.imageAlt, this.button});
+  final String id;
+  final String title;
+  final String? body;
+  final String? imageUrl;
+  final String? imageAlt;
+  final HeroSignalInAppButton? button;
+}
+
+/// Yatay kaydırmalı kartlar (v2 Faz 18); kart düğmeleri [HeroSignalInAppMessage.buttons] içinde yer alır.
+class HeroSignalInAppCarousel extends HeroSignalInAppBlock {
+  const HeroSignalInAppCarousel({required this.id, required this.cards});
+  final String id;
+  final List<HeroSignalInAppCarouselCard> cards;
+
+  /// Kimliksiz veya kartsız carousel null; kimliksiz kart atlanır, geçersiz kart düğmesi yalnızca düğmeyi düşürür.
+  static HeroSignalInAppCarousel? _fromMap(Map<Object?, Object?> map) {
+    final id = _nonEmpty(map['id']);
+    if (id == null) return null;
+    final cards = <HeroSignalInAppCarouselCard>[];
+    for (final raw in (map['cards'] as List?) ?? const []) {
+      if (raw is! Map) continue;
+      final c = raw.cast<Object?, Object?>();
+      final cardId = _nonEmpty(c['id']);
+      if (cardId == null) continue;
+      HeroSignalInAppButton? button;
+      final b = (c['button'] as Map?)?.cast<Object?, Object?>();
+      final buttonId = b == null ? null : _nonEmpty(b['id']);
+      if (b != null && buttonId != null) {
+        final action = HeroSignalInAppAction.fromMap((b['action'] as Map?)?.cast<Object?, Object?>());
+        if (action != null) button = HeroSignalInAppButton(id: buttonId, text: b['text'] as String? ?? '', action: action);
+      }
+      cards.add(HeroSignalInAppCarouselCard(
+        id: cardId,
+        title: c['title'] as String? ?? '',
+        body: _nonEmpty(c['body']),
+        imageUrl: _nonEmpty(c['image_url']),
+        imageAlt: _nonEmpty(c['image_alt']),
+        button: button,
+      ));
+    }
+    return cards.isEmpty ? null : HeroSignalInAppCarousel(id: id, cards: List.unmodifiable(cards));
+  }
+}
+
 /// Yerel SDK'nın gösterim için seçtiği in-app mesaj (tetik ve sıklık yerel SDK'da değerlendirilir).
 class HeroSignalInAppMessage {
   const HeroSignalInAppMessage({
@@ -126,6 +179,9 @@ class HeroSignalInAppMessage {
     this.textColor,
     this.autoDismissSeconds,
     this.variantId,
+    this.contentType = HeroSignalInAppContentType.blocks,
+    this.html,
+    this.htmlHeight,
   });
 
   final String id;
@@ -140,12 +196,32 @@ class HeroSignalInAppMessage {
   final int? autoDismissSeconds;
   final List<HeroSignalInAppBlock> blocks;
 
-  List<HeroSignalInAppButton> get buttons => blocks.whereType<HeroSignalInAppButton>().toList();
+  /// [HeroSignalInAppContentType.html] ise [blocks] boştur; içerik yerel SDK'nın WebView'ında çizilir.
+  final HeroSignalInAppContentType contentType;
+
+  /// Kullanıcının dilinde, kişiselleştirilmiş HTML (yalnızca HTML içerikte).
+  final String? html;
+
+  /// Banner/modal için ilk HTML yüksekliği (mantıksal piksel).
+  final int? htmlHeight;
+
+  /// Düğme blokları ve carousel kartlarının düğmeleri.
+  List<HeroSignalInAppButton> get buttons => [
+        for (final block in blocks)
+          if (block is HeroSignalInAppButton)
+            block
+          else if (block is HeroSignalInAppCarousel)
+            for (final card in block.cards)
+              if (card.button != null) card.button!,
+      ];
 
   /// Sunucu JSON'undan (`GET /sdk/v1/apps/{app}/in-app` öğesi).
   factory HeroSignalInAppMessage.fromMap(Map<Object?, Object?> map) {
     final display = (map['display'] as Map?)?.cast<Object?, Object?>() ?? const <Object?, Object?>{};
     final auto = display['auto_dismiss_seconds'];
+    // Alan yoksa veya tanınmıyorsa bloklar (eski sunucu uyumu).
+    final isHtml = display['content_type'] == 'html';
+    final htmlHeight = display['html_height'];
     return HeroSignalInAppMessage(
       id: map['id'] as String,
       priority: (map['priority'] as num?)?.toInt() ?? 0,
@@ -160,11 +236,16 @@ class HeroSignalInAppMessage {
       textColor: _nonEmpty(display['text_color']),
       dismissible: display['dismissible'] as bool? ?? true,
       autoDismissSeconds: auto is num && auto > 0 ? auto.toInt() : null,
-      blocks: ((display['blocks'] as List?) ?? const [])
-          .whereType<Map>()
-          .map((b) => HeroSignalInAppBlock.fromMap(b.cast<Object?, Object?>()))
-          .whereType<HeroSignalInAppBlock>()
-          .toList(),
+      blocks: isHtml
+          ? const []
+          : ((display['blocks'] as List?) ?? const [])
+              .whereType<Map>()
+              .map((b) => HeroSignalInAppBlock.fromMap(b.cast<Object?, Object?>()))
+              .whereType<HeroSignalInAppBlock>()
+              .toList(),
+      contentType: isHtml ? HeroSignalInAppContentType.html : HeroSignalInAppContentType.blocks,
+      html: isHtml ? _nonEmpty(display['html']) : null,
+      htmlHeight: isHtml && htmlHeight is num && htmlHeight > 0 ? htmlHeight.toInt() : null,
     );
   }
 }
