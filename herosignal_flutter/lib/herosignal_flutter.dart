@@ -4,6 +4,7 @@
 /// await HeroSignal.initialize('app_…', apiUrl: 'https://api.example.com');
 /// await HeroSignal.Notifications.requestPermission();
 /// await HeroSignal.login('user_42');
+/// await HeroSignal.login('user_42', jwt: jwtFromYourServer); // identity verification `jwt`/`both`
 /// await HeroSignal.User.addTags({'plan': 'pro'});
 /// HeroSignal.Notifications.clickStream.listen((e) => print(e.url));
 /// HeroSignal.Notifications.addPermissionObserver((granted) => print('izin: $granted'));
@@ -14,6 +15,7 @@
 /// final prefs = await HeroSignal.User.getPreferences();
 /// await HeroSignal.InAppMessages.addTrigger('level', 'gold');
 /// final page = await HeroSignal.Inbox.list(limit: 20);
+/// await HeroSignal.LiveActivities.setupDefaultLiveActivity(); // yalnızca iOS
 /// ```
 library;
 
@@ -144,10 +146,21 @@ class HeroSignal {
 
   static Future<void> setConsentGiven(bool given) => _channel.invokeMethod<void>('setConsentGiven', {'given': given});
 
-  /// Anonim kullanıcıyı kimlikli kullanıcıya bağlar (gerekirse birleştirir).
-  static Future<void> login(String externalId, {String? identityHash}) =>
-      _channel.invokeMethod<void>('login', {'externalId': externalId, 'identityHash': identityHash});
+  /// Anonim kullanıcıyı kimlikli kullanıcıya bağlar (gerekirse birleştirir). Kimlik kanıtı app ayarına göre HMAC
+  /// [identityHash] ve/veya sunucunuzda imzalanmış ES256 [jwt]'dir. JWT yerel SDK'da kalıcı saklanır ve SDK
+  /// isteklerinde `Authorization: Bearer` başlığıyla gider; süresi dolunca [updateUserJwt] ile yenilenir. App kanıtı
+  /// zorunlu tutuyorsa ve eksikse [PlatformException] döner.
+  static Future<void> login(String externalId, {String? identityHash, String? jwt}) =>
+      _channel.invokeMethod<void>('login', {
+        'externalId': externalId,
+        'identityHash': identityHash,
+        'jwt': ?jwt,
+      });
 
+  /// Giriş yapmış kullanıcının kimlik JWT'sini yeniler; giriş yoksa veya belirteç boşsa [PlatformException].
+  static Future<void> updateUserJwt(String jwt) => _channel.invokeMethod<void>('updateUserJwt', {'jwt': jwt});
+
+  /// Kimliği ayırır; kimlik JWT'si ve identity hash cihazdan silinir.
   static Future<void> logout() => _channel.invokeMethod<void>('logout');
 
   static const User = _User();
@@ -155,6 +168,7 @@ class HeroSignal {
   static const InAppMessages = _InAppMessages();
   static const Inbox = _Inbox();
   static const Session = _Session();
+  static const LiveActivities = _LiveActivities();
   static const Debug = _Debug();
 }
 
@@ -401,6 +415,58 @@ class _Session {
 
   Future<void> sendEvent(String name, {Map<String, Object?> properties = const {}, double? value}) =>
       HeroSignal._channel.invokeMethod<void>('sendEvent', {'name': name, 'properties': properties, 'value': value});
+}
+
+/// iOS Live Activities (ADR-0024), genel `HeroSignalDefaultLiveActivityAttributes` türüyle. Android'de çağrılar
+/// [PlatformException] (`PLATFORM_NOT_SUPPORTED`) ile döner; iOS hata kodları: `PLATFORM_NOT_SUPPORTED` (iOS 16.1
+/// öncesi), `NOT_READY`, `INVALID_ARGUMENT`, `LIVE_ACTIVITY_FAILED`.
+class _LiveActivities {
+  const _LiveActivities();
+
+  /// Etkinlik kimliği kuralı (sunucu ve iOS SDK ile aynı): 1-100 karakter; harf, rakam ve `_ . : -`.
+  static final RegExp _activityId = RegExp(r'^[A-Za-z0-9_.:-]{1,100}$');
+
+  /// Sunucunun uzaktan başlatmada `attributes` içine yazdığı ayrılmış anahtar.
+  static const String _reservedKey = 'herosignal';
+
+  /// Genel türü izlemeye alır: push-to-start belirteci (iOS 17.2+) ve başlayan her etkinliğin güncelleme belirteci
+  /// sunucuya kaydedilir. [HeroSignal.initialize]'dan sonra, uygulama her açıldığında çağrılmalıdır.
+  Future<void> setupDefaultLiveActivity() => HeroSignal._channel.invokeMethod<void>('setupDefaultLiveActivity');
+
+  /// Genel türle yerel bir etkinlik başlatır (iOS 16.1+); sunucu sonraki `update`/`end` çağrılarını [activityId] ile
+  /// yapar. Değerler metin, sonlu sayı veya `bool`; anahtarlar 1-64 karakter; [attributes] içinde `herosignal`
+  /// anahtarı ayrılmıştır. Kurala uymayan girdi platforma gitmeden [ArgumentError] fırlatır.
+  Future<void> startDefaultLiveActivity(
+    String activityId,
+    Map<String, Object> attributes,
+    Map<String, Object> contentState,
+  ) {
+    if (!_activityId.hasMatch(activityId)) {
+      throw ArgumentError.value(activityId, 'activityId', '1-100 karakter olmalı (harf, rakam ve _ . : -)');
+    }
+    _checkValues(attributes, 'attributes', reservedKey: _reservedKey);
+    _checkValues(contentState, 'contentState');
+    return HeroSignal._channel.invokeMethod<void>('startDefaultLiveActivity', {
+      'activityId': activityId,
+      'attributes': attributes,
+      'contentState': contentState,
+    });
+  }
+
+  static void _checkValues(Map<String, Object> values, String name, {String? reservedKey}) {
+    for (final MapEntry(:key, :value) in values.entries) {
+      if (key.isEmpty || key.length > 64) {
+        throw ArgumentError.value(key, name, 'anahtarlar 1-64 karakter olmalı');
+      }
+      if (key == reservedKey) {
+        throw ArgumentError.value(key, name, "'$reservedKey' anahtarı ayrılmıştır");
+      }
+      final valid = value is String || value is bool || (value is num && value.isFinite);
+      if (!valid) {
+        throw ArgumentError.value(value, '$name.$key', 'metin, sonlu sayı veya bool olmalı');
+      }
+    }
+  }
 }
 
 class _Debug {
