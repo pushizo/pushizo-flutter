@@ -72,6 +72,13 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
                 Pushizo.InAppMessages.addLifecycleListener(self)
                 // In-app mesajları Dart (Flutter widget'ları) çizer; tetik, sıklık, olay ve aksiyonlar yerel SDK'dadır.
                 Pushizo.InAppMessages.setRenderer(self)
+                // Canlı sohbet olayları → Dart `Pushizo.Chat.events`; bildirim tıklaması → `openStream` (bekletmeli).
+                Pushizo.Chat.addListener { [weak self] event in
+                    self?.emit((["type": "chat", "event": event.type] as [String: Any]).merging(event.payload) { current, _ in current })
+                }
+                Pushizo.Chat.addOpenListener { [weak self] info in
+                    self?.emitClick((["type": "chatOpen"] as [String: Any]).merging(info.dictionary) { current, _ in current })
+                }
             }
             result(nil)
         case "setConsentGiven": Pushizo.setConsentGiven(args["given"] as? Bool ?? false); result(nil)
@@ -178,6 +185,39 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
         case "requestLocationPermission":
             // Tamamlama ana iş parçacığında çağrılır; reddedilmiş/kısıtlı izin veya eksik Info.plist anahtarı → false.
             Pushizo.Location.requestPermission(rationale: args["rationale"] as? String) { granted in result(granted) }
+        // Canlı sohbet (ADR-0040): kimlik, kuyruk, akış ve push yerel SDK'dadır.
+        case "chatStart":
+            inbox(result) { try await Pushizo.Chat.start(name: args["name"] as? String, email: args["email"] as? String, language: args["language"] as? String).dictionary }
+        case "chatGetConfig":
+            inbox(result) { try await Pushizo.Chat.getConfig(language: args["language"] as? String).dictionary }
+        case "chatGetConversation":
+            inbox(result) { try await Pushizo.Chat.getConversation().dictionary }
+        case "chatGetMessages":
+            inbox(result) {
+                try await Pushizo.Chat.getMessages(afterSeq: (args["afterSeq"] as? NSNumber)?.intValue, beforeSeq: (args["beforeSeq"] as? NSNumber)?.intValue,
+                                                   limit: (args["limit"] as? NSNumber)?.intValue ?? 50).dictionary
+            }
+        case "chatSendMessage":
+            inbox(result) { try await Pushizo.Chat.sendMessage(args["text"] as? String ?? "", optionId: args["optionId"] as? String).dictionary }
+        case "chatSendAttachment":
+            let bytes = (args["bytes"] as? FlutterStandardTypedData)?.data ?? Data()
+            inbox(result) {
+                try await Pushizo.Chat.sendAttachment(bytes, fileName: args["fileName"] as? String ?? "", mimeType: args["mimeType"] as? String ?? "",
+                                                      text: args["text"] as? String).dictionary
+            }
+        case "chatMarkRead":
+            inbox(result) { try await Pushizo.Chat.markRead((args["seq"] as? NSNumber)?.intValue ?? 0) }
+        case "chatRefreshUnreadCount":
+            inbox(result) { try await Pushizo.Chat.refreshUnreadCount() }
+        case "chatGetUnreadCount": result(Pushizo.Chat.unreadCount)
+        case "chatLeaveOfflineMessage":
+            inbox(result) { try await Pushizo.Chat.leaveOfflineMessage(email: args["email"] as? String ?? "", text: args["text"] as? String ?? "", name: args["name"] as? String).dictionary }
+        case "chatSetTyping": Pushizo.Chat.setTyping(args["typing"] as? Bool ?? false); result(nil)
+        case "chatStartListening": Pushizo.Chat.startListening(); result(nil)
+        case "chatStopListening": Pushizo.Chat.stopListening(); result(nil)
+        case "chatAttachmentUrl":
+            inbox(result) { try Pushizo.Chat.attachmentUrl(args["attachmentId"] as? String ?? "", download: args["download"] as? Bool ?? false).absoluteString }
+        case "chatGetVisitorId": result(Pushizo.Chat.visitorId)
         // Live Activities (ADR-0024): genel `PushizoDefaultLiveActivityAttributes` türü; değer doğrulaması yerel SDK'dadır.
         case "setupDefaultLiveActivity":
             liveActivity(result) { try Pushizo.LiveActivities.setupDefaultLiveActivity() }
@@ -294,6 +334,8 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
                 DispatchQueue.main.async { result(value) }
             } catch let error as HSApiError {
                 DispatchQueue.main.async { result(FlutterError(code: error.code, message: error.message, details: nil)) }
+            } catch HSChatError.invalidArgument(let message) {
+                DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGUMENT", message: message, details: nil)) }
             } catch {
                 DispatchQueue.main.async { result(FlutterError(code: "NOT_READY", message: "\(error)", details: nil)) }
             }

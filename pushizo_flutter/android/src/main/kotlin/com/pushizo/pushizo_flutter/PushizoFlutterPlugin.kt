@@ -10,6 +10,8 @@ import android.os.Handler
 import android.os.Looper
 import com.pushizo.sdk.Pushizo
 import com.pushizo.sdk.HsCallback
+import com.pushizo.sdk.HsChatEventAdapter
+import com.pushizo.sdk.HsChatOpenListener
 import com.pushizo.sdk.HsClickEvent
 import com.pushizo.sdk.HsForegroundEvent
 import com.pushizo.sdk.HsInAppClickEvent
@@ -92,6 +94,12 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
     }
     private val subscriptionObserver: (HsPushSubscriptionState) -> Unit = { s -> emit(mapOf("type" to "subscription", "state" to s.toMap())) }
 
+    /** Canlı sohbet olayları → Dart `Pushizo.Chat.events` (`type: chat`, `event`: message/typing/read/unread/…). */
+    private val chatListener = HsChatEventAdapter { event, payload -> emit(mapOf("type" to "chat", "event" to event) + payload) }
+
+    /** Sohbet bildirimine tıklama → Dart `Pushizo.Chat.openStream`; akış dinlenmiyorsa tıklamalar gibi bekletilir. */
+    private val chatOpenListener = HsChatOpenListener { info -> emitClick(mapOf("type" to "chatOpen") + info.toMap()) }
+
     /** Yerel SDK izin gözlemcisi → Dart `permissionStream` / `addPermissionObserver`. */
     private val permissionObserver: (Boolean) -> Unit = { granted -> emit(mapOf("type" to "permission", "permission" to granted)) }
 
@@ -147,6 +155,8 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
         Pushizo.InAppMessages.removeClickListener(inAppClickListener)
         Pushizo.InAppMessages.removeLifecycleListener(inAppLifecycleListener)
         Pushizo.InAppMessages.setRenderer(null)
+        Pushizo.Chat.removeListener(chatListener)
+        Pushizo.Chat.removeOpenListener(chatOpenListener)
         inAppHandles.values.toList().forEach { it.closed() }
         inAppHandles.clear()
         foregroundEvents.clear()
@@ -175,6 +185,8 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
                     Pushizo.InAppMessages.addClickListener(inAppClickListener)
                     Pushizo.InAppMessages.addLifecycleListener(inAppLifecycleListener)
                     Pushizo.InAppMessages.setRenderer(inAppRenderer)
+                    Pushizo.Chat.addListener(chatListener)
+                    Pushizo.Chat.addOpenListener(chatOpenListener)
                     result.success(null)
                 }
                 "setConsentGiven" -> { Pushizo.setConsentGiven(call.argument<Boolean>("given") ?: false); result.success(null) }
@@ -251,6 +263,30 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
                 "setLocationShared" -> { Pushizo.Location.setShared(call.argument<Boolean>("shared") ?: false); result.success(null) }
                 "getLocationShared" -> result.success(Pushizo.Location.isShared)
                 "requestLocationPermission" -> requestLocationPermission(call.argument<String>("rationale"), result)
+                // Canlı sohbet (ADR-0040): kimlik, kuyruk, akış ve push yerel SDK'dadır.
+                "chatStart" -> Pushizo.Chat.start(call.argument<String>("name"), call.argument<String>("email"), call.argument<String>("language"), reply(result) { it.toMap() })
+                "chatGetConfig" -> Pushizo.Chat.getConfig(call.argument<String>("language"), reply(result) { it.toMap() })
+                "chatGetConversation" -> Pushizo.Chat.getConversation(reply(result) { it.toMap() })
+                "chatGetMessages" -> Pushizo.Chat.getMessages(
+                    call.argument<Number>("afterSeq")?.toLong(), call.argument<Number>("beforeSeq")?.toLong(),
+                    call.argument<Int>("limit") ?: 50, reply(result) { it.toMap() },
+                )
+                "chatSendMessage" -> Pushizo.Chat.sendMessage(call.argument<String>("text").orEmpty(), call.argument<String>("optionId"), reply(result) { it.toMap() })
+                "chatSendAttachment" -> Pushizo.Chat.sendAttachment(
+                    call.argument<ByteArray>("bytes") ?: ByteArray(0), call.argument<String>("fileName").orEmpty(),
+                    call.argument<String>("mimeType").orEmpty(), call.argument<String>("text"), reply(result) { it.toMap() },
+                )
+                "chatMarkRead" -> Pushizo.Chat.markRead(call.argument<Number>("seq")?.toLong() ?: 0L, reply(result) { it })
+                "chatRefreshUnreadCount" -> Pushizo.Chat.refreshUnreadCount(reply(result) { it })
+                "chatGetUnreadCount" -> result.success(Pushizo.Chat.unreadCount)
+                "chatLeaveOfflineMessage" -> Pushizo.Chat.leaveOfflineMessage(
+                    call.argument<String>("email").orEmpty(), call.argument<String>("text").orEmpty(), call.argument<String>("name"), reply(result) { it.toMap() },
+                )
+                "chatSetTyping" -> { Pushizo.Chat.setTyping(call.argument<Boolean>("typing") ?: false); result.success(null) }
+                "chatStartListening" -> { Pushizo.Chat.startListening(); result.success(null) }
+                "chatStopListening" -> { Pushizo.Chat.stopListening(); result.success(null) }
+                "chatAttachmentUrl" -> result.success(Pushizo.Chat.attachmentUrl(call.argument<String>("attachmentId").orEmpty(), call.argument<Boolean>("download") ?: false))
+                "chatGetVisitorId" -> result.success(Pushizo.Chat.visitorId)
                 // Live Activities yalnızca iOS'ta vardır (ADR-0024); Android'de sessizce başarılı dönülmez.
                 "setupDefaultLiveActivity", "startDefaultLiveActivity" ->
                     result.error(LIVE_ACTIVITY_UNSUPPORTED_CODE, LIVE_ACTIVITY_UNSUPPORTED_MESSAGE, null)

@@ -178,7 +178,26 @@ class PushizoWebBridge {
     'inAppButtonClicked': "Web'de in-app mesajları Web SDK çizer; Flutter çizim geri bildirimi kullanılmaz",
     'inAppDismissed': "Web'de in-app mesajları Web SDK çizer; Flutter çizim geri bildirimi kullanılmaz",
     'inAppClosed': "Web'de in-app mesajları Web SDK çizer; Flutter çizim geri bildirimi kullanılmaz",
+    'chatStart': _chatOnWeb,
+    'chatGetConfig': _chatOnWeb,
+    'chatGetConversation': _chatOnWeb,
+    'chatGetMessages': _chatOnWeb,
+    'chatSendMessage': _chatOnWeb,
+    'chatSendAttachment': _chatOnWeb,
+    'chatMarkRead': _chatOnWeb,
+    'chatRefreshUnreadCount': _chatOnWeb,
+    'chatGetUnreadCount': _chatOnWeb,
+    'chatLeaveOfflineMessage': _chatOnWeb,
+    'chatSetTyping': _chatOnWeb,
+    'chatStartListening': _chatOnWeb,
+    'chatStopListening': _chatOnWeb,
+    'chatAttachmentUrl': _chatOnWeb,
+    'chatGetVisitorId': _chatOnWeb,
   };
+
+  /// Flutter web'de canlı sohbet Web SDK'nın sohbet widget'ıyla sunulur; `Pushizo.Chat` yalnızca Android ve iOS'tadır.
+  static const String _chatOnWeb =
+      "Flutter web'de canlı sohbet Web SDK widget'ıyla sunulur; Pushizo.Chat yalnızca Android ve iOS'ta kullanılabilir";
 
   /// Web'de desteklenen kanal yöntemleri.
   static const Set<String> supportedMethods = {
