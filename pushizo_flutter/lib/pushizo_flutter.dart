@@ -15,6 +15,9 @@
 /// final prefs = await Pushizo.User.getPreferences();
 /// await Pushizo.InAppMessages.addTrigger('level', 'gold');
 /// final page = await Pushizo.Inbox.list(limit: 20);
+/// await Pushizo.Chat.start();
+/// Pushizo.Chat.events.listen((e) => print(e.message?.text));
+/// await Pushizo.Chat.sendMessage('Merhaba');
 /// await Pushizo.LiveActivities.setupDefaultLiveActivity(); // yalnızca iOS
 /// if (await Pushizo.Location.requestPermission()) await Pushizo.Location.setShared(true);
 /// ```
@@ -32,6 +35,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+part 'src/chat_models.dart';
 part 'src/in_app_view.dart';
 part 'src/messaging_models.dart';
 part 'src/models.dart';
@@ -53,6 +57,16 @@ class Pushizo {
     _eventStream = stream;
     // Tıklamalar ayrı, bekletmeli akıştan dağıtılır: olay akışı başka bir dinleyiciyle (ör. permissionStream) açıldığında
     // gelen tıklama, `clickStream` henüz dinlenmiyorsa kaybolmaz (soğuk başlangıç).
+    // Sohbet bildirimi tıklamaları da bekletilir (`Chat.openStream` soğuk başlangıçta henüz dinlenmiyor olabilir).
+    stream.where((e) => e['type'] == 'chatOpen').listen((e) {
+      final open = PushizoChatOpenEvent.fromMap(e);
+      if (_chatOpens.hasListener) {
+        _chatOpens.add(open);
+      } else {
+        if (_pendingChatOpens.length >= _maxPendingClicks) _pendingChatOpens.removeAt(0);
+        _pendingChatOpens.add(open);
+      }
+    });
     stream.where((e) => e['type'] == 'click').listen((e) {
       final click = PushizoClickEvent.fromMap(e);
       if (_clicks.hasListener) {
@@ -74,6 +88,16 @@ class Pushizo {
     },
   );
   static final List<PushizoClickEvent> _pendingClicks = [];
+
+  /// Sohbet bildirimi tıklamaları; ilk dinleyici bağlanınca bekleyenler iletilir.
+  static final StreamController<PushizoChatOpenEvent> _chatOpens = StreamController<PushizoChatOpenEvent>.broadcast(
+    onListen: () {
+      final pending = List<PushizoChatOpenEvent>.of(_pendingChatOpens);
+      _pendingChatOpens.clear();
+      pending.forEach(_chatOpens.add);
+    },
+  );
+  static final List<PushizoChatOpenEvent> _pendingChatOpens = [];
   static const int _maxPendingClicks = 20;
 
   /// [_InAppMessages.addClickListener] / [_InAppMessages.addLifecycleListener] ile eklenen dinleyicilerin abonelikleri.
@@ -174,6 +198,7 @@ class Pushizo {
   static const Notifications = _Notifications();
   static const InAppMessages = _InAppMessages();
   static const Inbox = _Inbox();
+  static const Chat = _Chat();
   static const Session = _Session();
   static const LiveActivities = _LiveActivities();
   static const Location = _Location();
@@ -390,6 +415,119 @@ class _InAppMessages {
   /// [addLifecycleListener] ile eklenen dinleyiciyi kaldırır.
   void removeLifecycleListener(PushizoInAppLifecycleListener listener) {
     Pushizo._inAppLifecycleListeners.remove(listener)?.cancel();
+  }
+}
+
+/// Canlı sohbet (ADR-0040; Android ve iOS). Ziyaretçi kimliği, çevrimdışı kuyruk, canlı akış (SSE + yoklama yedeği) ve
+/// push ile gelen mesajlar yerel SDK'dadır; login/logout ve push aboneliği değişince bağlama yerel SDK'da yenilenir.
+/// Flutter web'de sohbet Web SDK widget'ıyla sunulur; buradaki yöntemler `PLATFORM_NOT_SUPPORTED` döner.
+class _Chat {
+  const _Chat();
+
+  /// Sohbeti etkinleştirir ve ziyaretçiyi bağlar (giriş yapmış kullanıcı, push aboneliği); konuşma varsa döner.
+  Future<PushizoChatIdentifyResult> start({String? name, String? email, String? language}) async {
+    final result = await Pushizo._channel.invokeMethod<Map<Object?, Object?>>('chatStart', {
+      'name': ?name,
+      'email': ?email,
+      'language': ?language,
+    });
+    return PushizoChatIdentifyResult.fromMap(result ?? const {});
+  }
+
+  /// Widget ayarları, çevrimiçi durumu, çevrimdışı metni ve ek sınırları.
+  Future<PushizoChatConfig> getConfig({String? language}) async {
+    final result = await Pushizo._channel.invokeMethod<Map<Object?, Object?>>('chatGetConfig', {'language': ?language});
+    return PushizoChatConfig.fromMap(result ?? const {});
+  }
+
+  /// Konuşma (yoksa null) ve okunmamış sayısı.
+  Future<PushizoChatConversationState> getConversation() async => PushizoChatConversationState.fromMap(
+        await Pushizo._channel.invokeMethod<Map<Object?, Object?>>('chatGetConversation') ?? const {},
+      );
+
+  /// Mesajlar (kronolojik): parametresiz en yeni [limit]; [afterSeq] sonrakiler, [beforeSeq] daha eski geçmiş (1-100).
+  Future<PushizoChatMessagePage> getMessages({int? afterSeq, int? beforeSeq, int limit = 50}) async {
+    if (limit < 1 || limit > 100) throw ArgumentError.value(limit, 'limit', '1-100 olmalı');
+    final result = await Pushizo._channel.invokeMethod<Map<Object?, Object?>>('chatGetMessages', {
+      'afterSeq': ?afterSeq,
+      'beforeSeq': ?beforeSeq,
+      'limit': limit,
+    });
+    return PushizoChatMessagePage.fromMap(result ?? const {});
+  }
+
+  /// Mesaj gönderir (ilk mesaj konuşmayı açar); [optionId] bot sorusunda seçilen hızlı yanıttır. Ağ yoksa mesaj yerel
+  /// SDK kuyruğuna alınır ve `pending` mesaj döner; gönderilince [events] üzerinden sunucu kopyası gelir.
+  Future<PushizoChatMessage> sendMessage(String text, {String? optionId}) async {
+    final result = await Pushizo._channel.invokeMethod<Map<Object?, Object?>>('chatSendMessage', {
+      'text': text,
+      'optionId': ?optionId,
+    });
+    return PushizoChatMessage.fromMap(result!);
+  }
+
+  /// Ek gönderir (PNG/JPEG/WebP/GIF/PDF/düz metin, en çok 10 MB).
+  Future<PushizoChatMessage> sendAttachment(Uint8List bytes, {required String fileName, required String mimeType, String? text}) async {
+    final result = await Pushizo._channel.invokeMethod<Map<Object?, Object?>>('chatSendAttachment', {
+      'bytes': bytes,
+      'fileName': fileName,
+      'mimeType': mimeType,
+      'text': ?text,
+    });
+    return PushizoChatMessage.fromMap(result!);
+  }
+
+  /// [seq] numarasına kadar okundu işaretler; kalan okunmamış sayısını döndürür.
+  Future<int> markRead(int seq) async => (await Pushizo._channel.invokeMethod<int>('chatMarkRead', {'seq': seq})) ?? 0;
+
+  /// Okunmamış sayısını sunucudan yeniler.
+  Future<int> refreshUnreadCount() async => (await Pushizo._channel.invokeMethod<int>('chatRefreshUnreadCount')) ?? 0;
+
+  /// Son bilinen okunmamış sayısı (ağ çağrısı yok).
+  Future<int> get unreadCount async => (await Pushizo._channel.invokeMethod<int>('chatGetUnreadCount')) ?? 0;
+
+  /// Çevrimdışı / çalışma saatleri dışında e-postayla mesaj bırakır.
+  Future<PushizoChatMessage> leaveOfflineMessage({required String email, required String text, String? name}) async {
+    final result = await Pushizo._channel.invokeMethod<Map<Object?, Object?>>('chatLeaveOfflineMessage', {
+      'email': email,
+      'text': text,
+      'name': ?name,
+    });
+    return PushizoChatMessage.fromMap(result!);
+  }
+
+  /// Yazıyor göstergesi (yerel SDK tekrarları seyreltir).
+  Future<void> setTyping(bool typing) => Pushizo._channel.invokeMethod<void>('chatSetTyping', {'typing': typing});
+
+  /// Canlı dinlemeyi başlatır; koparsa yerel SDK geri çekilmeyle yeniden bağlanır ve eksikleri yoklar.
+  Future<void> startListening() => Pushizo._channel.invokeMethod<void>('chatStartListening');
+
+  /// Canlı dinlemeyi durdurur (arka plana geçişte önerilir; temsilci mesajı push ile gelir).
+  Future<void> stopListening() => Pushizo._channel.invokeMethod<void>('chatStopListening');
+
+  /// Ek dosyasının adresi; ziyaretçi belirtecini taşır, yalnızca görsel yükleyiciye verin ve loglamayın.
+  Future<String> attachmentUrl(String attachmentId, {bool download = false}) async =>
+      (await Pushizo._channel.invokeMethod<String>('chatAttachmentUrl', {'attachmentId': attachmentId, 'download': download}))!;
+
+  /// Bu cihazın ziyaretçi kimliği (sohbet henüz kullanılmadıysa null).
+  Future<String?> get visitorId => Pushizo._channel.invokeMethod<String>('chatGetVisitorId');
+
+  /// Canlı sohbet olayları (mesaj, yazıyor, okundu, okunmamış, konuşma, bağlantı, hata).
+  Stream<PushizoChatEvent> get events => Pushizo._rawEvents
+      .where((e) => e['type'] == 'chat')
+      .map((e) => PushizoChatEvent.fromMap(Map<Object?, Object?>.from(e)));
+
+  /// Yeni mesajlar ([events] içindeki `message` olayları).
+  Stream<PushizoChatMessage> get messageStream => events.where((e) => e.type == 'message').map((e) => e.message!);
+
+  /// Okunmamış sayısı değişimleri.
+  Stream<int> get unreadCountStream => events.where((e) => e.type == 'unread').map((e) => e.count);
+
+  /// Sohbet bildirimine tıklamalar (uygulama sohbet ekranını açmalı); soğuk başlangıçta gelenler ilk dinleyiciye iletilir.
+  Stream<PushizoChatOpenEvent> get openStream {
+    // Yerel olay akışını açar (bekletmeli dağıtıcı ilk erişimde kurulur).
+    Pushizo._rawEvents;
+    return Pushizo._chatOpens.stream;
   }
 }
 
