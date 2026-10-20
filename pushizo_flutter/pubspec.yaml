@@ -1,10 +1,9 @@
 name: pushizo_flutter
 description: "Pushizo Flutter SDK: push kaydı, kullanıcı/tag yönetimi, olaylar ve teslimat geri bildirimi (Android, iOS ve web)."
 version: 0.1.0
-homepage: https://github.com/exec0de/pushizo/tree/main/sdk/flutter/pushizo_flutter
+homepage: https://docs.pushizo.com/docs/sdk/flutter
 repository: https://github.com/exec0de/pushizo
-issue_tracker: https://github.com/exec0de/pushizo/issues
-documentation: https://github.com/exec0de/pushizo/blob/main/docs/sdk/flutter.md
+documentation: https://docs.pushizo.com/docs/sdk/flutter
 # pub.dev yayını sdk-release.yml `pubdev` işiyle (workflow_dispatch) yapılır; yerel `dart pub publish --dry-run` ile kontrol edin.
 
 environment:
