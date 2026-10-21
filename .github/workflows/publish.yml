@@ -1,0 +1,41 @@
+# pub.dev yayını (trusted publishing / OIDC).
+#
+# pub.dev → pushizo_flutter → Admin → Automated publishing: GitHub Actions, depo pushizo/pushizo-flutter, etiket deseni
+# v{{version}}; "workflow_dispatch" olaylarına da izin verin. Sürüm etiketi itildiğinde ya da elle çalıştırıldığında
+# paket pushizo_flutter/ dizininden yayımlanır. İlk sürüm pub.dev kuralı gereği bir kez elle yayımlanır.
+name: Publish to pub.dev
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Sürüm etiketi (ör. v0.1.0)
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: dart-lang/setup-dart@v1
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Analiz ve testler
+        working-directory: pushizo_flutter
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+      - name: Yayımla
+        working-directory: pushizo_flutter
+        run: flutter pub publish --force
