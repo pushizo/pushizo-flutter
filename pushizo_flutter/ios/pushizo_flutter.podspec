@@ -5,7 +5,7 @@ Pod::Spec.new do |s|
   s.description      = <<-DESC
 Pushizo iOS SDK üzerine Flutter MethodChannel/EventChannel köprüsü.
                        DESC
-  s.homepage         = 'https://github.com/exec0de/pushizo'
+  s.homepage         = 'https://github.com/pushizo/pushizo-flutter'
   s.license          = { :file => '../LICENSE' }
   s.author           = { 'Pushizo' => 'bildirim@pushizo.com' }
   s.source           = { :path => '.' }
