@@ -76,21 +76,21 @@ void main() {
     test('initialize seçenekleri Web SDK init seçeneklerine eşlenir; dinleyiciler bir kez eklenir', () async {
       await call('initialize', {
         'appId': 'app_1',
-        'apiUrl': 'https://api.example.com',
+        'apiUrl': 'https://api.pushizo.com',
         'requiresPrivacyConsent': true,
         'logLevel': 'none',
         'web': {'serviceWorkerPath': '/push/PushizoSDKWorker.js', 'serviceWorkerScope': '/push/'},
       });
-      await call('initialize', {'appId': 'app_1', 'apiUrl': 'https://api.example.com', 'logLevel': 'debug'});
+      await call('initialize', {'appId': 'app_1', 'apiUrl': 'https://api.pushizo.com', 'logLevel': 'debug'});
       expect(sdk.calls.first, ['init', {
         'appId': 'app_1',
-        'apiUrl': 'https://api.example.com',
+        'apiUrl': 'https://api.pushizo.com',
         'requiresPrivacyConsent': true,
         'logLevel': 'silent',
         'serviceWorkerPath': '/push/PushizoSDKWorker.js',
         'serviceWorkerScope': '/push/',
       }]);
-      expect(sdk.calls[1][1], {'appId': 'app_1', 'apiUrl': 'https://api.example.com', 'requiresPrivacyConsent': false, 'logLevel': 'debug'});
+      expect(sdk.calls[1][1], {'appId': 'app_1', 'apiUrl': 'https://api.pushizo.com', 'requiresPrivacyConsent': false, 'logLevel': 'debug'});
       expect(sdk.listenerCount, 6);
       await expectLater(call('initialize', {'appId': ''}), platformError('INVALID_ARGUMENT'));
     });
@@ -116,7 +116,7 @@ void main() {
       await expectLater(call('login', {'externalId': 'u1'}), platformError('HS_ERROR'));
       sdk.failures['updateUserJwt'] = const WebSdkError('Pushizo.init önce çağrılmalı.');
       await expectLater(call('updateUserJwt', {'jwt': 'x'}), platformError('NOT_READY'));
-      sdk.failures['addEmail'] = const WebSdkError('Geçersiz e-posta adresi (ör. ad@ornek.com).', name: 'ContactValidationError');
+      sdk.failures['addEmail'] = const WebSdkError('Geçersiz e-posta adresi (ör. ad@pushizo.com).', name: 'ContactValidationError');
       await expectLater(call('addEmail', {'email': 'x'}), platformError('INVALID_ARGUMENT'));
       sdk.failures['addAliases'] = const WebSdkError('Geçersiz alias etiketi "A"');
       await expectLater(call('addAliases', {'aliases': {'A': '1'}}), platformError('INVALID_ARGUMENT'));
@@ -138,7 +138,7 @@ void main() {
       expect(await call('getTags'), {'plan': 'pro', 'score': '3', 'vip': 'true'});
       await call('addAliases', {'aliases': {'crm_id': '42'}});
       await call('removeAlias', {'label': 'crm_id'});
-      await call('addEmail', {'email': 'ali@example.com'});
+      await call('addEmail', {'email': 'ali@pushizo.com'});
       await call('removeSms', {'phoneNumber': '+905321234567'});
       await call('setLanguage', {'code': 'tr'});
       expect(await call('getExternalId'), 'u1');
@@ -384,7 +384,7 @@ void main() {
     sdk.values['locationShared'] = false;
     sdk.values['requestLocationPermission'] = true;
     sdk.values['getTags'] = {'plan': 'pro'};
-    await Pushizo.initialize('app_1', apiUrl: 'https://api.example.com', web: const PushizoWebOptions(allowLocalhostAsSecureOrigin: true));
+    await Pushizo.initialize('app_1', apiUrl: 'https://api.pushizo.com', web: const PushizoWebOptions(allowLocalhostAsSecureOrigin: true));
     await Pushizo.login('u1', jwt: 'h.p.s');
     await Pushizo.User.addTag('plan', 'pro');
     expect(await Pushizo.User.getTags(), {'plan': 'pro'});
@@ -395,7 +395,7 @@ void main() {
     await expectLater(Pushizo.Notifications.removeNotification(1), platformError('PLATFORM_NOT_SUPPORTED'));
     expect(sdk.calls.first, ['init', {
       'appId': 'app_1',
-      'apiUrl': 'https://api.example.com',
+      'apiUrl': 'https://api.pushizo.com',
       'requiresPrivacyConsent': false,
       'logLevel': 'warn',
       'allowLocalhostAsSecureOrigin': true,

@@ -83,7 +83,7 @@ void main() {
         case 'chatGetUnreadCount':
           return 3;
         case 'chatAttachmentUrl':
-          return 'https://api.example.com/sdk/v1/apps/app_1/chat/attachments/att_1?visitor_id=v&token=t';
+          return 'https://api.pushizo.com/sdk/v1/apps/app_1/chat/attachments/att_1?visitor_id=v&token=t';
         default:
           return null;
       }
@@ -127,8 +127,8 @@ void main() {
     await Pushizo.Chat.sendAttachment(bytes, fileName: 'a.png', mimeType: 'image/png');
     expect(calls.last.arguments, {'bytes': bytes, 'fileName': 'a.png', 'mimeType': 'image/png'});
 
-    await Pushizo.Chat.leaveOfflineMessage(email: 'ali@example.com', text: 'Arayın');
-    expect(calls.last.arguments, {'email': 'ali@example.com', 'text': 'Arayın'});
+    await Pushizo.Chat.leaveOfflineMessage(email: 'ali@pushizo.com', text: 'Arayın');
+    expect(calls.last.arguments, {'email': 'ali@pushizo.com', 'text': 'Arayın'});
 
     expect(await Pushizo.Chat.markRead(12), 3);
     expect(calls.last.arguments, {'seq': 12});

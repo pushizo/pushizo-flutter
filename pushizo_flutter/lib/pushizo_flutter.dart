@@ -1,7 +1,7 @@
 /// Pushizo Flutter SDK: Android/iOS yerel SDK'larını platform kanalı ile sarar.
 ///
 /// ```dart
-/// await Pushizo.initialize('app_…', apiUrl: 'https://api.example.com');
+/// await Pushizo.initialize('app_…', apiUrl: 'https://api.pushizo.com');
 /// await Pushizo.Notifications.requestPermission();
 /// await Pushizo.login('user_42');
 /// await Pushizo.login('user_42', jwt: jwtFromYourServer); // identity verification `jwt`/`both`
@@ -11,7 +11,7 @@
 /// Pushizo.Notifications.setForegroundWillDisplayHandler((event) {
 ///   if (event.notification.data['silent_in_app'] == '1') event.preventDefault();
 /// });
-/// await Pushizo.User.addEmail('ali@example.com');
+/// await Pushizo.User.addEmail('ali@pushizo.com');
 /// final prefs = await Pushizo.User.getPreferences();
 /// await Pushizo.InAppMessages.addTrigger('level', 'gold');
 /// final page = await Pushizo.Inbox.list(limit: 20);

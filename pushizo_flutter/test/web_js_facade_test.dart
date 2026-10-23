@@ -14,7 +14,7 @@ import 'package:pushizo_flutter/src/web/web_bridge.dart';
 const _fakeSdk = r'''
 (function () {
   class ContactValidationError extends Error {
-    constructor() { super('Geçersiz e-posta adresi (ör. ad@ornek.com).'); this.name = 'ContactValidationError'; }
+    constructor() { super('Geçersiz e-posta adresi (ör. ad@pushizo.com).'); this.name = 'ContactValidationError'; }
   }
   const calls = [];
   const arg = (v) => (v === undefined ? 'undefined' : v);

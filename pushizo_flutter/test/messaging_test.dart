@@ -118,7 +118,7 @@ void main() {
               'background_color': null,
               'text_color': null,
             },
-            {'type': 'video', 'url': 'https://cdn.example.com/x.mp4'},
+            {'type': 'video', 'url': 'https://cdn.pushizo.com/x.mp4'},
           ],
         },
         'remaining_impressions': 1,
@@ -128,12 +128,12 @@ void main() {
       };
 
   test('e-posta/SMS çağrıları platforma iletilir', () async {
-    await Pushizo.User.addEmail('Ali@Example.com');
-    await Pushizo.User.removeEmail('ali@example.com');
+    await Pushizo.User.addEmail('Ali@Pushizo.com');
+    await Pushizo.User.removeEmail('ali@pushizo.com');
     await Pushizo.User.addSms('+90 532 123 45 67');
     await Pushizo.User.removeSms('+905321234567');
     expect(calls.map((c) => c.method).toList(), ['addEmail', 'removeEmail', 'addSms', 'removeSms']);
-    expect(calls[0].arguments, {'email': 'Ali@Example.com'});
+    expect(calls[0].arguments, {'email': 'Ali@Pushizo.com'});
     expect(calls[2].arguments, {'phoneNumber': '+90 532 123 45 67'});
   });
 

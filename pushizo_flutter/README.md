@@ -13,22 +13,6 @@
 
 **Pushizo Flutter SDK** — One Dart API for iOS, Android and the web: push notifications, in-app messages, notification inbox, users, tags and aliases, email and SMS subscriptions, preferences, live chat and Live Activities (iOS). Wraps the native Pushizo Android and iOS SDKs.
 
-> **Status:** Publishing to pub.dev is in progress.<br>
-> **Durum:** pub.dev yayını hazırlanıyor.
-
-**Install from GitHub until then · O zamana kadar GitHub'dan kurulum:**
-
-```yaml
-dependencies:
-  pushizo_flutter:
-    git:
-      url: https://github.com/pushizo/pushizo-flutter.git
-      path: pushizo_flutter
-      ref: v0.1.0
-```
-
-**After publication · Yayından sonra:**
-
 ```bash
 flutter pub add pushizo_flutter
 ```
@@ -53,7 +37,7 @@ Adım adım kurulum, izinler, kanallar ve tüm API: [docs.pushizo.com/docs/sdk/f
 ## Web
 
 Web'de aynı Dart API'si sayfaya yüklenen Web SDK'ya köprülenir: `web/index.html` içine Flutter betiğinden önce
-`<script src="https://api.example.com/sdk-web/PushizoSDK.js"></script>` ekleyin. Web'de karşılığı olmayan yöntemler
+`<script src="https://api.pushizo.com/sdk-web/PushizoSDK.js"></script>` ekleyin. Web'de karşılığı olmayan yöntemler
 `PLATFORM_NOT_SUPPORTED` döner. Ayrıntılar: [flutter rehberi](https://docs.pushizo.com/docs/sdk/flutter) → "Flutter web".
 
 ## Canlı sohbet
@@ -67,7 +51,7 @@ Pushizo.Chat.openStream.listen((e) => openChat(e.conversationId)); // sohbet bil
 await Pushizo.Chat.startListening();                     // ekran açıkken; ayrılınca stopListening()
 await Pushizo.Chat.sendMessage('Merhaba');               // bot hızlı yanıtı: sendMessage(r.label, optionId: r.id)
 await Pushizo.Chat.markRead(messages.last.seq);
-if (!config.online) await Pushizo.Chat.leaveOfflineMessage(email: 'ali@example.com', text: 'Beni arayın');
+if (!config.online) await Pushizo.Chat.leaveOfflineMessage(email: 'ali@pushizo.com', text: 'Beni arayın');
 ```
 
 Ziyaretçi kimliği, çevrimdışı kuyruk (aynı `client_message_id` ile yeniden deneme), canlı akış (SSE; koparsa üstel
