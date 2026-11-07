@@ -95,6 +95,19 @@ abstract interface class WebSdkFacade {
   Future<bool> locationShared();
   Future<bool> requestLocationPermission(String? rationale);
 
+  /// `Placements.list(key, {limit})`; her mesaj sunucu JSON'u metni olarak.
+  Future<List<String>> placementsList(String key, int limit);
+
+  /// `Placements.reportImpression` / `reportClick` / `reportDismiss`; [messageJson] [placementsList] çıktısındaki mesajdır.
+  Future<void> placementsReport(String method, String messageJson, String? buttonId);
+
+  /// `FeatureFlags.refresh()`; değerler gerçekten yenilendiyse (Web SDK bayrak gözlemcisi tetiklendiyse) `true`.
+  Future<bool> featureFlagsRefresh();
+  Future<bool> featureFlagEnabled(String key, bool defaultValue);
+
+  /// `FeatureFlags.getValue(key)` değeri `{"value": …}` JSON metni olarak; değer yoksa `null`.
+  Future<String?> featureFlagValueJson(String key);
+
   void addClickListener(void Function(Map<Object?, Object?> event) listener);
   void addForegroundListener(void Function(WebForegroundEvent event) listener);
   void addSubscriptionObserver(void Function(Map<Object?, Object?> state) observer);
@@ -208,8 +221,18 @@ class PushizoWebBridge {
     'setForegroundHandlerEnabled', 'displayForegroundNotification', 'sendEvent', 'setLogLevel',
     'addTriggers', 'removeTriggers', 'clearTriggers', 'getTriggers', 'setScreen', 'setInAppPaused', 'getInAppPaused',
     'inboxList', 'inboxMarkRead', 'inboxMarkAllRead', 'inboxArchive', 'inboxUnreadCount',
-    'setLocationShared', 'getLocationShared', 'requestLocationPermission',
+    'setLocationShared', 'getLocationShared', 'requestLocationPermission', 'setGeofencingEnabled', 'getGeofencingEnabled',
+    'placementsList', 'placementsReportImpression', 'placementsReportClick', 'placementsReportDismiss',
+    'featureFlagsRefresh', 'featureFlagsIsEnabled', 'featureFlagsGetValue',
   };
+
+  /// Yerleşim anahtarı kuralı (sunucu ve yerel SDK'larla aynı).
+  static final RegExp _placementKey = RegExp(r'^[a-z][a-z0-9_.-]{0,63}$');
+
+  /// Son `placementsList` çağrılarından dönen mesajlar (kimlik → JSON, en çok [_maxPlacementMessages]); rapor çağrıları
+  /// Web SDK'ya bu mesajla yapılır.
+  final Map<String, String> _placementMessages = {};
+  static const int _maxPlacementMessages = 50;
 
   /// Bilinmeyen yöntem hatası yerine kullanılan, Web SDK yüklenmemiş durumu açıklaması.
   static const String notLoadedMessage =
@@ -376,6 +399,31 @@ class PushizoWebBridge {
       case 'requestLocationPermission':
         final rationale = _optionalString(args, 'rationale');
         return _sdk.requestLocationPermission(rationale == null || rationale.trim().isEmpty ? null : rationale);
+      // Bölge izleme web'de yoktur (ADR-0065): açma etkisizdir, durum her zaman kapalıdır.
+      case 'setGeofencingEnabled':
+        return null;
+      case 'getGeofencingEnabled':
+        return false;
+      case 'placementsList':
+        final key = _requireString(args, 'key');
+        if (!_placementKey.hasMatch(key)) throw PlatformException(code: 'INVALID_ARGUMENT', message: 'Geçersiz yerleşim anahtarı');
+        final limit = args['limit'] ?? 1;
+        if (limit is! int || limit < 1 || limit > 10) throw PlatformException(code: 'INVALID_ARGUMENT', message: 'limit 1-10 olmalı');
+        final messages = await _sdk.placementsList(key, limit);
+        _rememberPlacementMessages(messages);
+        return messages;
+      case 'placementsReportImpression':
+        return _reportPlacement('reportImpression', args);
+      case 'placementsReportClick':
+        return _reportPlacement('reportClick', args);
+      case 'placementsReportDismiss':
+        return _reportPlacement('reportDismiss', args);
+      case 'featureFlagsRefresh':
+        return _sdk.featureFlagsRefresh();
+      case 'featureFlagsIsEnabled':
+        return _sdk.featureFlagEnabled(_requireString(args, 'key'), args['defaultValue'] == true);
+      case 'featureFlagsGetValue':
+        return _sdk.featureFlagValueJson(_requireString(args, 'key'));
     }
     throw MissingPluginException('pushizo_flutter web: bilinmeyen çağrı $method');
   }
@@ -432,6 +480,29 @@ class PushizoWebBridge {
       preferences.insert(last >= 0 ? last + 1 : preferences.length, next);
     }
     return {'data': preferences, 'categories': categories};
+  }
+
+  // --- Yerleşimler ---
+
+  void _rememberPlacementMessages(List<String> messages) {
+    for (final json in messages) {
+      final decoded = jsonDecode(json);
+      final id = decoded is Map ? decoded['id'] : null;
+      if (id is! String) continue;
+      _placementMessages.remove(id);
+      _placementMessages[id] = json;
+    }
+    while (_placementMessages.length > _maxPlacementMessages) {
+      _placementMessages.remove(_placementMessages.keys.first);
+    }
+  }
+
+  /// Rapor çağrısı; mesaj son `placementsList` sonuçlarında yoksa sessizce yok sayılır.
+  Future<Object?> _reportPlacement(String method, Map<Object?, Object?> args) async {
+    final json = _placementMessages[_optionalString(args, 'messageId') ?? ''];
+    if (json == null) return null;
+    await _sdk.placementsReport(method, json, method == 'reportClick' ? _requireString(args, 'buttonId') : null);
+    return null;
   }
 
   // --- Olaylar ---

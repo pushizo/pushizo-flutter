@@ -15,6 +15,8 @@
 /// final prefs = await Pushizo.User.getPreferences();
 /// await Pushizo.InAppMessages.addTrigger('level', 'gold');
 /// final page = await Pushizo.Inbox.list(limit: 20);
+/// final banners = await Pushizo.Placements.list('home_top'); // çizim uygulamanın; reportImpression/reportClick
+/// if (await Pushizo.FeatureFlags.isEnabled('new_checkout')) showNewCheckout();
 /// await Pushizo.Chat.start();
 /// Pushizo.Chat.events.listen((e) => print(e.message?.text));
 /// await Pushizo.Chat.sendMessage('Merhaba');
@@ -198,6 +200,8 @@ class Pushizo {
   static const Notifications = _Notifications();
   static const InAppMessages = _InAppMessages();
   static const Inbox = _Inbox();
+  static const Placements = _Placements();
+  static const FeatureFlags = _FeatureFlags();
   static const Chat = _Chat();
   static const Session = _Session();
   static const LiveActivities = _LiveActivities();
@@ -556,6 +560,64 @@ class _Inbox {
   Future<int> unreadCount() async => (await Pushizo._channel.invokeMethod<int>('inboxUnreadCount')) ?? 0;
 }
 
+/// Gömülü yerleşimler (ADR-0068): uygulamanın ayırdığı alana içerik. [list] modeli döndürür, çizim uygulamanındır;
+/// içerik ekrana gelince [reportImpression], düğmeye basılınca [reportClick], kapatılınca [reportDismiss] çağrılır.
+/// Abonelik yoksa veya gizlilik onayı bekleniyorsa liste boştur.
+class _Placements {
+  const _Placements();
+
+  /// Yerleşim anahtarı kuralı (sunucu ve yerel SDK'larla aynı).
+  static final RegExp _key = RegExp(r'^[a-z][a-z0-9_.-]{0,63}$');
+
+  /// [key] alanının içeriği (en çok [limit] mesaj, 1-10). Kurala uymayan girdi platforma gitmeden [ArgumentError] fırlatır.
+  Future<List<PushizoInAppMessage>> list(String key, {int limit = 1}) async {
+    if (!_key.hasMatch(key)) throw ArgumentError.value(key, 'key', 'geçersiz yerleşim anahtarı');
+    if (limit < 1 || limit > 10) throw ArgumentError.value(limit, 'limit', '1-10 olmalı');
+    final result = await Pushizo._channel.invokeMethod<List<Object?>>('placementsList', {'key': key, 'limit': limit});
+    return [
+      for (final json in result ?? const <Object?>[])
+        if (json is String) PushizoInAppMessage.fromMap(jsonDecode(json) as Map<String, dynamic>),
+    ];
+  }
+
+  /// İçerik ekrana geldi; [message] son [list] çağrılarından gelen mesaj olmalıdır (yerel taraf kimliğe göre bulur).
+  Future<void> reportImpression(PushizoInAppMessage message) =>
+      Pushizo._channel.invokeMethod<void>('placementsReportImpression', {'messageId': message.id});
+
+  /// [buttonId] düğmesine basıldı ([PushizoInAppButton.id]).
+  Future<void> reportClick(PushizoInAppMessage message, String buttonId) =>
+      Pushizo._channel.invokeMethod<void>('placementsReportClick', {'messageId': message.id, 'buttonId': buttonId});
+
+  /// Kullanıcı içeriği kapattı.
+  Future<void> reportDismiss(PushizoInAppMessage message) =>
+      Pushizo._channel.invokeMethod<void>('placementsReportDismiss', {'messageId': message.id});
+}
+
+/// Özellik bayrakları (ADR-0066): değerler oturum başında yerel SDK tarafından yenilenir ve cihazda saklanır; okuma
+/// çağrıları ağa çıkmaz.
+class _FeatureFlags {
+  const _FeatureFlags();
+
+  /// Değerleri hemen yeniler; başarıyla alındıysa `true`. Hata son değerleri korur; gizlilik onayı beklenirken istek
+  /// gönderilmez.
+  Future<bool> refresh() async => (await Pushizo._channel.invokeMethod<bool>('featureFlagsRefresh')) ?? false;
+
+  /// Bayrak bu kullanıcı için açık mı; değer henüz yoksa [defaultValue].
+  Future<bool> isEnabled(String key, {bool defaultValue = false}) async =>
+      (await Pushizo._channel.invokeMethod<bool>('featureFlagsIsEnabled', {'key': key, 'defaultValue': defaultValue})) ??
+      defaultValue;
+
+  /// Bayrağın değeri: `String`, `num`, `bool`, `Map<String, dynamic>` veya `List<dynamic>` (JSON); değer yoksa
+  /// [defaultValue].
+  Future<Object?> getValue(String key, {Object? defaultValue}) async {
+    // Yerel taraf değeri `{"value": …}` JSON metni olarak taşır; böylece nesne ve dizi değerler platformlar arasında
+    // aynı Dart türlerine çözülür.
+    final json = await Pushizo._channel.invokeMethod<String>('featureFlagsGetValue', {'key': key});
+    if (json == null) return defaultValue;
+    return (jsonDecode(json) as Map<String, dynamic>)['value'] ?? defaultValue;
+  }
+}
+
 class _Session {
   const _Session();
 
@@ -633,6 +695,17 @@ class _Location {
   /// tanımlanmadıysa (Android manifest / iOS `NSLocationWhenInUseUsageDescription`) `false`.
   Future<bool> requestPermission({String? rationale}) async =>
       (await Pushizo._channel.invokeMethod<bool>('requestLocationPermission', {'rationale': rationale})) ?? false;
+
+  /// Arka plan bölge izlemeyi açar/kapatır (ADR-0065; varsayılan kapalı, tercih kalıcı). İzlemeyi işletim sistemi yapar,
+  /// sunucuya koordinat gitmez, yalnızca bölgeye giriş/çıkış bildirilir. [setShared] açık ve arka plan ("her zaman")
+  /// konum izni verilmiş olmalıdır; izin ve manifest/Info.plist girdileri uygulamanın sorumluluğundadır (köprü izin
+  /// istemez). Web'de etkisizdir.
+  Future<void> setGeofencingEnabled(bool enabled) =>
+      Pushizo._channel.invokeMethod<void>('setGeofencingEnabled', {'enabled': enabled});
+
+  /// Bölge izleme açık mı (kalıcı tercih; izin durumundan bağımsız). Web'de her zaman `false`.
+  Future<bool> get isGeofencingEnabled async =>
+      (await Pushizo._channel.invokeMethod<bool>('getGeofencingEnabled')) ?? false;
 }
 
 class _Debug {

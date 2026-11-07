@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -297,6 +298,88 @@ void main() {
     await expectLater(call('setLocationShared', {'shared': true}), platformError('NOT_READY'));
   });
 
+  test('bölge izleme web\'de yoktur: açma etkisiz, durum false; Web SDK\'ya çağrı gitmez', () async {
+    expect(await call('setGeofencingEnabled', {'enabled': true}), isNull);
+    expect(await call('getGeofencingEnabled'), isFalse);
+    expect(sdk.calls, isEmpty);
+  });
+
+  group('özellik bayrakları', () {
+    test('refresh, isEnabled ve getValue Web SDK FeatureFlags API\'sine iletilir', () async {
+      sdk.values['featureFlagsRefresh'] = true;
+      sdk.values['featureFlagEnabled'] = true;
+      sdk.values['featureFlagValueJson'] = '{"value":{"max":3}}';
+      expect(await call('featureFlagsRefresh'), isTrue);
+      expect(await call('featureFlagsIsEnabled', {'key': 'new_checkout', 'defaultValue': false}), isTrue);
+      expect(await call('featureFlagsGetValue', {'key': 'limits'}), '{"value":{"max":3}}');
+      sdk.values['featureFlagValueJson'] = null;
+      expect(await call('featureFlagsGetValue', {'key': 'missing'}), isNull);
+      expect(sdk.calls, [
+        ['featureFlagsRefresh'],
+        ['featureFlagEnabled', 'new_checkout', false],
+        ['featureFlagValueJson', 'limits'],
+        ['featureFlagValueJson', 'missing'],
+      ]);
+      await expectLater(call('featureFlagsIsEnabled', {'defaultValue': true}), platformError('INVALID_ARGUMENT'));
+      sdk.failures['featureFlagsRefresh'] = const WebSdkError('Pushizo.init önce çağrılmalı.');
+      await expectLater(call('featureFlagsRefresh'), platformError('NOT_READY'));
+    });
+  });
+
+  group('yerleşimler', () {
+    String message(String id, {String? variant}) =>
+        '{"id":"$id","priority":1${variant == null ? '' : ',"variant_id":"$variant"'},"display":{"layout":"modal","blocks":[]}}';
+
+    test('list anahtar/limit ile Web SDK\'ya gider; raporlar listedeki mesajla yapılır, bilinmeyen mesaj yok sayılır', () async {
+      sdk.values['placementsList'] = [message('m1', variant: 'var_b'), message('m2')];
+      final result = await call('placementsList', {'key': 'home_top', 'limit': 2});
+      expect(result, [message('m1', variant: 'var_b'), message('m2')]);
+      final parsed = PushizoInAppMessage.fromMap(jsonDecode((result as List).first as String) as Map<String, dynamic>);
+      expect(parsed.variantId, 'var_b');
+
+      await call('placementsReportImpression', {'messageId': 'm1'});
+      await call('placementsReportClick', {'messageId': 'm1', 'buttonId': 'go'});
+      await call('placementsReportDismiss', {'messageId': 'm2'});
+      await call('placementsReportImpression', {'messageId': 'unknown'});
+      await call('placementsReportDismiss', const {});
+      expect(sdk.calls, [
+        ['placementsList', 'home_top', 2],
+        ['placementsReport', 'reportImpression', message('m1', variant: 'var_b'), null],
+        ['placementsReport', 'reportClick', message('m1', variant: 'var_b'), 'go'],
+        ['placementsReport', 'reportDismiss', message('m2'), null],
+      ]);
+      await expectLater(call('placementsReportClick', {'messageId': 'm1'}), platformError('INVALID_ARGUMENT'));
+    });
+
+    test('varsayılan limit 1; önbellek en çok 50 mesaj tutar (en eski düşer, yenilenen mesaj tazelenir)', () async {
+      sdk.values['placementsList'] = [message('m0')];
+      await call('placementsList', {'key': 'a'});
+      expect(sdk.calls.single, ['placementsList', 'a', 1]);
+      sdk.values['placementsList'] = [for (var i = 1; i <= 49; i++) message('m$i')];
+      await call('placementsList', {'key': 'b', 'limit': 10});
+      sdk.values['placementsList'] = [message('m0'), message('m50')];
+      await call('placementsList', {'key': 'c', 'limit': 2});
+      sdk.calls.clear();
+      await call('placementsReportImpression', {'messageId': 'm0'});
+      await call('placementsReportImpression', {'messageId': 'm1'});
+      await call('placementsReportImpression', {'messageId': 'm2'});
+      expect(sdk.calls.map((c) => jsonDecode(c[2] as String)['id']), ['m0', 'm2']);
+    });
+
+    test('geçersiz anahtar ve limit Web SDK\'ya gitmeden INVALID_ARGUMENT döner', () async {
+      for (final key in ['', 'Home', '1abc', 'a' * 65, 'home top']) {
+        await expectLater(call('placementsList', {'key': key}), platformError('INVALID_ARGUMENT'), reason: key);
+      }
+      await expectLater(call('placementsList', {'key': 'home', 'limit': 0}), platformError('INVALID_ARGUMENT'));
+      await expectLater(call('placementsList', {'key': 'home', 'limit': 11}), platformError('INVALID_ARGUMENT'));
+      await expectLater(call('placementsList', {'key': 'home', 'limit': 'x'}), platformError('INVALID_ARGUMENT'));
+      await expectLater(call('placementsList', const {}), platformError('INVALID_ARGUMENT'));
+      expect(sdk.calls, isEmpty);
+      sdk.failures['placementsList'] = const WebSdkError('Pushizo.init önce çağrılmalı.');
+      await expectLater(call('placementsList', {'key': 'home'}), platformError('NOT_READY'));
+    });
+  });
+
   group('olaylar', () {
     Future<void> init() => call('initialize', {'appId': 'app_1', 'logLevel': 'warn'});
 
@@ -391,6 +474,15 @@ void main() {
     expect(await Pushizo.Location.isShared, isFalse);
     expect(await Pushizo.Location.requestPermission(rationale: 'Yakındaki mağazalar'), isTrue);
     await Pushizo.Location.setShared(true);
+    await Pushizo.Location.setGeofencingEnabled(true);
+    expect(await Pushizo.Location.isGeofencingEnabled, isFalse);
+    sdk.values['featureFlagEnabled'] = true;
+    sdk.values['featureFlagValueJson'] = '{"value":[1,"a"]}';
+    sdk.values['placementsList'] = ['{"id":"m1","priority":1,"display":{"layout":"modal","blocks":[]}}'];
+    expect(await Pushizo.FeatureFlags.isEnabled('beta'), isTrue);
+    expect(await Pushizo.FeatureFlags.getValue('list'), [1, 'a']);
+    final placement = (await Pushizo.Placements.list('home_top')).single;
+    await Pushizo.Placements.reportImpression(placement);
     await expectLater(Pushizo.LiveActivities.setupDefaultLiveActivity(), platformError('PLATFORM_NOT_SUPPORTED'));
     await expectLater(Pushizo.Notifications.removeNotification(1), platformError('PLATFORM_NOT_SUPPORTED'));
     expect(sdk.calls.first, ['init', {
@@ -401,7 +493,7 @@ void main() {
       'allowLocalhostAsSecureOrigin': true,
     }]);
     expect(sdk.calls[1], ['login', 'u1', null, 'h.p.s']);
-    expect(sdk.calls.last, ['setLocationShared', true]);
+    expect(sdk.calls.last, ['placementsReport', 'reportImpression', '{"id":"m1","priority":1,"display":{"layout":"modal","blocks":[]}}', null]);
   });
 
   test('webErrorCode ve webLogLevel', () {
@@ -533,6 +625,19 @@ class FakeWebSdk implements WebSdkFacade {
   @override
   Future<bool> requestLocationPermission(String? rationale) async =>
       (await _record<bool?>('requestLocationPermission', [rationale])) ?? false;
+  @override
+  Future<List<String>> placementsList(String key, int limit) async =>
+      (await _record<List<String>?>('placementsList', [key, limit])) ?? const [];
+  @override
+  Future<void> placementsReport(String method, String messageJson, String? buttonId) =>
+      _record('placementsReport', [method, messageJson, buttonId]);
+  @override
+  Future<bool> featureFlagsRefresh() async => (await _record<bool?>('featureFlagsRefresh')) ?? false;
+  @override
+  Future<bool> featureFlagEnabled(String key, bool defaultValue) async =>
+      (await _record<bool?>('featureFlagEnabled', [key, defaultValue])) ?? defaultValue;
+  @override
+  Future<String?> featureFlagValueJson(String key) => _record('featureFlagValueJson', [key]);
   @override
   void addClickListener(void Function(Map<Object?, Object?> event) listener) => _click = listener;
   @override

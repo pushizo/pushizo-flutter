@@ -36,6 +36,7 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.PluginRegistry
+import org.json.JSONObject
 import java.util.UUID
 
 /** Flutter → Android SDK köprüsü (MethodChannel + EventChannel). */
@@ -160,6 +161,7 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
         inAppHandles.values.toList().forEach { it.closed() }
         inAppHandles.clear()
         foregroundEvents.clear()
+        placementMessages.clear()
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -251,6 +253,21 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
                 "inboxMarkAllRead" -> Pushizo.Inbox.markAllRead(reply(result) { it })
                 "inboxArchive" -> Pushizo.Inbox.archive(call.argument<String>("id")!!, reply(result) { null })
                 "inboxUnreadCount" -> Pushizo.Inbox.unreadCount(reply(result) { it })
+                // Gömülü yerleşimler (ADR-0068): mesajlar ham JSON olarak Dart'a gider; rapor çağrıları için kimliğe göre
+                // saklanır (geçersiz anahtar/limit → yerel SDK IllegalArgumentException → INVALID_ARGUMENT).
+                "placementsList" -> Pushizo.Placements.list(call.argument<String>("key").orEmpty(), call.argument<Int>("limit") ?: 1) { messages ->
+                    main.post {
+                        rememberPlacementMessages(messages)
+                        result.success(messages.map { it.toJson() })
+                    }
+                }
+                "placementsReportImpression" -> { placementMessage(call)?.let { Pushizo.Placements.reportImpression(it) }; result.success(null) }
+                "placementsReportClick" -> { placementMessage(call)?.let { Pushizo.Placements.reportClick(it, call.argument<String>("buttonId").orEmpty()) }; result.success(null) }
+                "placementsReportDismiss" -> { placementMessage(call)?.let { Pushizo.Placements.reportDismiss(it) }; result.success(null) }
+                // Özellik bayrakları (ADR-0066): okuma yerel önbellekten; ham değer `{"value": …}` JSON metni olarak taşınır.
+                "featureFlagsRefresh" -> Pushizo.FeatureFlags.refresh { ok -> main.post { result.success(ok) } }
+                "featureFlagsIsEnabled" -> result.success(Pushizo.FeatureFlags.isEnabled(call.argument<String>("key").orEmpty(), call.argument<Boolean>("defaultValue") ?: false))
+                "featureFlagsGetValue" -> result.success(Pushizo.FeatureFlags.getValue(call.argument<String>("key").orEmpty())?.let { JSONObject().put("value", it).toString() })
                 // Tercihler (ADR-0019 §4); kanıt ve istek yerel SDK'da
                 "getPreferences" -> Pushizo.User.getPreferences(reply(result) { it.toMap() })
                 "setPreferences" -> {
@@ -262,6 +279,9 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
                 // Konum paylaşımı (v2 Faz 17b); gönderim, aralık ve rıza kuralları yerel SDK'dadır.
                 "setLocationShared" -> { Pushizo.Location.setShared(call.argument<Boolean>("shared") ?: false); result.success(null) }
                 "getLocationShared" -> result.success(Pushizo.Location.isShared)
+                // Arka plan bölge izleme (ADR-0065): varsayılan kapalı; izin ve manifest girdileri uygulamanın sorumluluğundadır.
+                "setGeofencingEnabled" -> { Pushizo.Location.setGeofencingEnabled(call.argument<Boolean>("enabled") ?: false); result.success(null) }
+                "getGeofencingEnabled" -> result.success(Pushizo.Location.isGeofencingEnabled)
                 "requestLocationPermission" -> requestLocationPermission(call.argument<String>("rationale"), result)
                 // Canlı sohbet (ADR-0040): kimlik, kuyruk, akış ve push yerel SDK'dadır.
                 "chatStart" -> Pushizo.Chat.start(call.argument<String>("name"), call.argument<String>("email"), call.argument<String>("language"), reply(result) { it.toMap() })
@@ -300,6 +320,26 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
     }
 
     private fun inAppHandle(call: MethodCall): HsInAppHandle? = call.argument<String>("messageId")?.let { inAppHandles[it] }
+
+    /**
+     * Son `placementsList` çağrılarından dönen mesajlar (kimliğe göre, en çok [MAX_PLACEMENT_MESSAGES]); rapor çağrıları
+     * yerel SDK'ya bu nesnelerle yapılır. Yalnızca ana iş parçacığında erişilir.
+     */
+    private val placementMessages = LinkedHashMap<String, HsInAppMessage>()
+
+    private fun rememberPlacementMessages(messages: List<HsInAppMessage>) {
+        for (message in messages) {
+            placementMessages.remove(message.id)
+            placementMessages[message.id] = message
+        }
+        while (placementMessages.size > MAX_PLACEMENT_MESSAGES) placementMessages.remove(placementMessages.keys.first())
+    }
+
+    /** Rapor çağrısının mesajı; önbellekte yoksa çağrı sessizce yok sayılır. */
+    private fun placementMessage(call: MethodCall): HsInAppMessage? {
+        val id = call.argument<String>("messageId").orEmpty()
+        return placementMessages[id] ?: run { HsLog.d("yerleşim raporu yok sayıldı: mesaj listede yok ($id)"); null }
+    }
 
     /** SDK geri çağrısını Flutter sonucuna çevirir (Flutter sonucu ana iş parçacığında ister). */
     private fun <T> reply(result: MethodChannel.Result, map: (T) -> Any?) = HsCallback<T> { r ->
@@ -441,6 +481,7 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
     private companion object {
         const val MAX_PENDING_CLICKS = 20
         const val MAX_FOREGROUND_EVENTS = 32
+        const val MAX_PLACEMENT_MESSAGES = 50
         const val LIVE_ACTIVITY_UNSUPPORTED_CODE = "PLATFORM_NOT_SUPPORTED"
         const val LIVE_ACTIVITY_UNSUPPORTED_MESSAGE = "Live Activities yalnızca iOS'ta desteklenir"
         val LOCATION_PERMISSIONS = listOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)

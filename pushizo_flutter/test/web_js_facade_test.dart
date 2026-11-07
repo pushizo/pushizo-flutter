@@ -65,6 +65,30 @@ const _fakeSdk = r'''
       get isShared() { return this.shared; },
       requestPermission(rationale) { calls.push(['requestPermission', arg(rationale)]); return Promise.resolve(true); },
     },
+    Placements: {
+      list(key, options) {
+        calls.push(['placementsList', key, arg(options)]);
+        return Promise.resolve([{ id: 'm1', priority: 1, variant_id: 'var_b', display: { layout: 'modal', blocks: [] } }]);
+      },
+      reportImpression(message) { calls.push(['reportImpression', message.id, arg(message.variant_id)]); },
+      reportClick(message, buttonId) { calls.push(['reportClick', message.id, buttonId]); },
+      reportDismiss(message) { calls.push(['reportDismiss', message.id]); },
+    },
+    FeatureFlags: {
+      listeners: new Set(),
+      refreshOk: true,
+      refresh() {
+        calls.push(['flagsRefresh']);
+        if (this.refreshOk) this.listeners.forEach((l) => l());
+        return Promise.resolve();
+      },
+      isEnabled(key, defaultValue) { calls.push(['isEnabled', key, arg(defaultValue)]); return key === 'on'; },
+      getValue(key, defaultValue) {
+        calls.push(['getValue', key, arg(defaultValue)]);
+        return { n: 3, obj: { max: 3, tags: ['a', 2.5] }, s: 'Yeni', f: false }[key];
+      },
+      addObserver(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); },
+    },
   };
   return sdk;
 })()
@@ -142,6 +166,41 @@ void main() {
     expect(calls().sublist(1), [
       ['requestPermission', 'undefined'],
       ['requestPermission', 'Yakındaki mağazalar'],
+    ]);
+  });
+
+  test('özellik bayrakları: refresh gözlemciyle doğrulanır, değerler JSON metni olarak döner', () async {
+    expect(await facade.featureFlagsRefresh(), isTrue);
+    final flags = fake.getProperty<JSObject>('FeatureFlags'.toJS);
+    flags.setProperty('refreshOk'.toJS, false.toJS);
+    expect(await facade.featureFlagsRefresh(), isFalse);
+    expect(flags.getProperty<JSObject>('listeners'.toJS).getProperty<JSNumber>('size'.toJS).toDartInt, 0, reason: 'gözlemci kaldırılır');
+    expect(await facade.featureFlagEnabled('on', false), isTrue);
+    expect(await facade.featureFlagEnabled('off', true), isFalse);
+    expect(await facade.featureFlagValueJson('n'), '{"value":3}');
+    expect(await facade.featureFlagValueJson('obj'), '{"value":{"max":3,"tags":["a",2.5]}}');
+    expect(await facade.featureFlagValueJson('s'), '{"value":"Yeni"}');
+    expect(await facade.featureFlagValueJson('f'), '{"value":false}');
+    expect(await facade.featureFlagValueJson('missing'), isNull);
+    expect(calls().sublist(0, 4), [
+      ['flagsRefresh'],
+      ['flagsRefresh'],
+      ['isEnabled', 'on', false],
+      ['isEnabled', 'off', true],
+    ]);
+  });
+
+  test('yerleşimler: liste JSON metinleri, rapor çağrıları JSON\'dan nesneye', () async {
+    final messages = await facade.placementsList('home_top', 2);
+    expect(messages, ['{"id":"m1","priority":1,"variant_id":"var_b","display":{"layout":"modal","blocks":[]}}']);
+    await facade.placementsReport('reportImpression', messages.single, null);
+    await facade.placementsReport('reportClick', messages.single, 'go');
+    await facade.placementsReport('reportDismiss', messages.single, null);
+    expect(calls(), [
+      ['placementsList', 'home_top', {'limit': 2}],
+      ['reportImpression', 'm1', 'var_b'],
+      ['reportClick', 'm1', 'go'],
+      ['reportDismiss', 'm1'],
     ]);
   });
 

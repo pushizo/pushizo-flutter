@@ -233,6 +233,49 @@ class JsWebSdkFacade implements WebSdkFacade {
   Future<bool> requestLocationPermission(String? rationale) async =>
       _bool(await _call(_ns('Location'), 'requestPermission', [if (rationale != null) rationale.toJS]));
 
+  /// `JSON.stringify(value)`; Dart'a dönüşte sayı/nesne türleri sunucu JSON'u ile aynı kalır.
+  static String _stringify(JSAny? value) =>
+      globalContext.getProperty<JSObject>('JSON'.toJS).callMethod<JSString>('stringify'.toJS, value).toDart;
+
+  @override
+  Future<List<String>> placementsList(String key, int limit) async {
+    final result = await _call(_ns('Placements'), 'list', [key.toJS, {'limit': limit}.jsify()]);
+    if (result == null || !result.isA<JSArray>()) return const [];
+    return [for (final message in (result as JSArray<JSAny?>).toDart) _stringify(message)];
+  }
+
+  @override
+  Future<void> placementsReport(String method, String messageJson, String? buttonId) {
+    final message = globalContext.getProperty<JSObject>('JSON'.toJS).callMethod<JSAny?>('parse'.toJS, messageJson.toJS);
+    return _call(_ns('Placements'), method, [message, if (buttonId != null) buttonId.toJS]);
+  }
+
+  @override
+  Future<bool> featureFlagsRefresh() async {
+    // Web SDK `refresh` sonuç döndürmez; gözlemci yalnızca değerler başarıyla yazıldığında tetiklenir.
+    var refreshed = false;
+    final unsubscribe = _ns('FeatureFlags').callMethod<JSFunction>('addObserver'.toJS, (() {
+      refreshed = true;
+    }).toJS);
+    try {
+      await _call(_ns('FeatureFlags'), 'refresh');
+    } finally {
+      unsubscribe.callAsFunction();
+    }
+    return refreshed;
+  }
+
+  @override
+  Future<bool> featureFlagEnabled(String key, bool defaultValue) async =>
+      _bool(await _call(_ns('FeatureFlags'), 'isEnabled', [key.toJS, defaultValue.toJS]));
+
+  @override
+  Future<String?> featureFlagValueJson(String key) async {
+    final value = await _call(_ns('FeatureFlags'), 'getValue', [key.toJS]);
+    if (value == null) return null;
+    return _stringify(JSObject()..setProperty('value'.toJS, value));
+  }
+
   @override
   void addClickListener(void Function(Map<Object?, Object?> event) listener) {
     _ns('Notifications').callMethod<JSAny?>('addClickListener'.toJS, ((JSAny? e) => listener(_map(e))).toJS);

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -240,6 +241,181 @@ void main() {
       expect(swift, contains('case "setLocationShared": Pushizo.Location.setShared(args["shared"] as? Bool ?? false); result(nil)'));
       expect(swift, contains('case "getLocationShared": result(Pushizo.Location.isShared)'));
       expect(swift, contains('Pushizo.Location.requestPermission(rationale: args["rationale"] as? String) { granted in result(granted) }'));
+    });
+  });
+
+  group('Bölge izleme', () {
+    test('setGeofencingEnabled ve isGeofencingEnabled platforma iletilir; varsayılan kapalı', () async {
+      expect(await Pushizo.Location.isGeofencingEnabled, isFalse);
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return call.method == 'getGeofencingEnabled' ? true : null;
+      });
+      await Pushizo.Location.setGeofencingEnabled(true);
+      expect(await Pushizo.Location.isGeofencingEnabled, isTrue);
+      await Pushizo.Location.setGeofencingEnabled(false);
+      expect(calls.map((c) => c.method).toList(), ['getGeofencingEnabled', 'setGeofencingEnabled', 'getGeofencingEnabled', 'setGeofencingEnabled']);
+      expect(calls[1].arguments, {'enabled': true});
+      expect(calls[2].arguments, isNull);
+      expect(calls[3].arguments, {'enabled': false});
+    });
+
+    test('yerel köprüler: Android ve iOS SDK çağrıları; köprü izin istemez', () {
+      String read(String path) => File(path).readAsStringSync().replaceAll('\r\n', '\n');
+      final kt = read('android/src/main/kotlin/com/pushizo/pushizo_flutter/PushizoFlutterPlugin.kt');
+      expect(kt, contains('"setGeofencingEnabled" -> { Pushizo.Location.setGeofencingEnabled(call.argument<Boolean>("enabled") ?: false); result.success(null) }'));
+      expect(kt, contains('"getGeofencingEnabled" -> result.success(Pushizo.Location.isGeofencingEnabled)'));
+      expect(kt, isNot(contains('ACCESS_BACKGROUND_LOCATION')));
+      expect(read('android/src/main/AndroidManifest.xml'), isNot(contains('uses-permission')));
+      final swift = read('ios/Classes/PushizoFlutterPlugin.swift');
+      expect(swift, contains('case "setGeofencingEnabled": Pushizo.Location.setGeofencingEnabled(args["enabled"] as? Bool ?? false); result(nil)'));
+      expect(swift, contains('case "getGeofencingEnabled": result(Pushizo.Location.isGeofencingEnabled)'));
+      expect(swift, isNot(contains('requestAlwaysPermission')));
+    });
+  });
+
+  group('Özellik bayrakları', () {
+    test('refresh, isEnabled ve getValue platforma iletilir; JSON değer çözülür', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return switch (call.method) {
+          'featureFlagsRefresh' => true,
+          'featureFlagsIsEnabled' => true,
+          'featureFlagsGetValue' => switch ((call.arguments as Map)['key']) {
+              'limit' => '{"value":3}',
+              'theme' => '{"value":{"color":"#112233","sizes":[1,2.5]}}',
+              'label' => '{"value":"Yeni"}',
+              _ => null,
+            },
+          _ => null,
+        };
+      });
+      expect(await Pushizo.FeatureFlags.refresh(), isTrue);
+      expect(await Pushizo.FeatureFlags.isEnabled('new_checkout'), isTrue);
+      expect(await Pushizo.FeatureFlags.isEnabled('beta', defaultValue: true), isTrue);
+      expect(await Pushizo.FeatureFlags.getValue('limit'), 3);
+      expect(await Pushizo.FeatureFlags.getValue('theme'), {'color': '#112233', 'sizes': [1, 2.5]});
+      expect(await Pushizo.FeatureFlags.getValue('label'), 'Yeni');
+      expect(await Pushizo.FeatureFlags.getValue('missing'), isNull);
+      expect(await Pushizo.FeatureFlags.getValue('missing', defaultValue: 'x'), 'x');
+      expect(calls.map((c) => c.method).toList(), [
+        'featureFlagsRefresh', 'featureFlagsIsEnabled', 'featureFlagsIsEnabled',
+        'featureFlagsGetValue', 'featureFlagsGetValue', 'featureFlagsGetValue', 'featureFlagsGetValue', 'featureFlagsGetValue',
+      ]);
+      expect(calls[0].arguments, isNull);
+      expect(calls[1].arguments, {'key': 'new_checkout', 'defaultValue': false});
+      expect(calls[2].arguments, {'key': 'beta', 'defaultValue': true});
+      expect(calls[3].arguments, {'key': 'limit'});
+    });
+
+    test('yerel sonuç yoksa varsayılanlar döner', () async {
+      expect(await Pushizo.FeatureFlags.refresh(), isFalse);
+      expect(await Pushizo.FeatureFlags.isEnabled('x'), isFalse);
+      expect(await Pushizo.FeatureFlags.isEnabled('x', defaultValue: true), isTrue);
+      expect(await Pushizo.FeatureFlags.getValue('x', defaultValue: 7), 7);
+    });
+
+    test('yerel köprüler: Android ve iOS SDK çağrıları ve JSON taşıma', () {
+      String read(String path) => File(path).readAsStringSync().replaceAll('\r\n', '\n');
+      final kt = read('android/src/main/kotlin/com/pushizo/pushizo_flutter/PushizoFlutterPlugin.kt');
+      expect(kt, contains('"featureFlagsRefresh" -> Pushizo.FeatureFlags.refresh { ok -> main.post { result.success(ok) } }'));
+      expect(kt, contains('Pushizo.FeatureFlags.isEnabled(call.argument<String>("key").orEmpty(), call.argument<Boolean>("defaultValue") ?: false)'));
+      expect(kt, contains('Pushizo.FeatureFlags.getValue(call.argument<String>("key").orEmpty())?.let { JSONObject().put("value", it).toString() }'));
+      final swift = read('ios/Classes/PushizoFlutterPlugin.swift');
+      expect(swift, contains('Task { let ok = await Pushizo.FeatureFlags.refresh(); DispatchQueue.main.async { result(ok) } }'));
+      expect(swift, contains('Pushizo.FeatureFlags.isEnabled(args["key"] as? String ?? "", default: args["defaultValue"] as? Bool ?? false)'));
+      expect(swift, contains('Self.flagValueJson(Pushizo.FeatureFlags.value(args["key"] as? String ?? ""))'));
+      expect(swift, contains('let wrapped: [String: Any] = ["value": value]'));
+    });
+  });
+
+  group('Yerleşimler', () {
+    Map<String, Object?> message(String id, {String? variant}) => {
+          'id': id,
+          'priority': 1,
+          'variant_id': ?variant,
+          'display': {
+            'layout': 'banner_top',
+            'blocks': [
+              {'type': 'title', 'text': 'Kampanya'},
+              {'type': 'button', 'id': 'go', 'text': 'İncele', 'action': {'type': 'url', 'url': 'https://pushizo.com'}},
+            ],
+          },
+        };
+
+    test('list anahtar ve limit ile platforma gider; JSON mesajlar modele çözülür', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        if (call.method != 'placementsList') return null;
+        return [jsonEncode(message('m1', variant: 'var_b')), jsonEncode(message('m2'))];
+      });
+      final messages = await Pushizo.Placements.list('home_top', limit: 2);
+      expect(calls.single.arguments, {'key': 'home_top', 'limit': 2});
+      expect(messages.map((m) => m.id).toList(), ['m1', 'm2']);
+      expect(messages.first.variantId, 'var_b');
+      expect(messages.first.layout, PushizoInAppLayout.bannerTop);
+      expect(messages.first.buttons.single.id, 'go');
+      expect(messages.first.buttons.single.action.url, 'https://pushizo.com');
+
+      await Pushizo.Placements.reportImpression(messages.first);
+      await Pushizo.Placements.reportClick(messages.first, 'go');
+      await Pushizo.Placements.reportDismiss(messages[1]);
+      expect(calls.map((c) => c.method).toList(), [
+        'placementsList', 'placementsReportImpression', 'placementsReportClick', 'placementsReportDismiss',
+      ]);
+      expect(calls[1].arguments, {'messageId': 'm1'});
+      expect(calls[2].arguments, {'messageId': 'm1', 'buttonId': 'go'});
+      expect(calls[3].arguments, {'messageId': 'm2'});
+    });
+
+    test('varsayılan limit 1; yerel sonuç yoksa boş liste', () async {
+      expect(await Pushizo.Placements.list('home_top'), isEmpty);
+      expect(calls.single.arguments, {'key': 'home_top', 'limit': 1});
+    });
+
+    test('geçersiz anahtar ve limit platforma gitmeden ArgumentError fırlatır', () async {
+      for (final key in ['', 'Home', '1abc', 'a' * 65, 'home top', 'home/top']) {
+        await expectLater(Pushizo.Placements.list(key), throwsArgumentError, reason: key);
+      }
+      await expectLater(Pushizo.Placements.list('home_top', limit: 0), throwsArgumentError);
+      await expectLater(Pushizo.Placements.list('home_top', limit: 11), throwsArgumentError);
+      expect(calls, isEmpty);
+      await Pushizo.Placements.list('a');
+      await Pushizo.Placements.list('a.b-c_d9', limit: 10);
+      expect(calls, hasLength(2));
+    });
+
+    test('yerel hata PlatformException olarak iletilir', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        throw PlatformException(code: 'HS_FORBIDDEN', message: 'Yasak');
+      });
+      await expectLater(
+        Pushizo.Placements.list('home_top'),
+        throwsA(isA<PlatformException>().having((e) => e.code, 'code', 'HS_FORBIDDEN')),
+      );
+    });
+
+    test('yerel köprüler: SDK çağrıları, kimliğe göre sınırlı önbellek ve bulunamayan mesajın yok sayılması', () {
+      String read(String path) => File(path).readAsStringSync().replaceAll('\r\n', '\n');
+      final kt = read('android/src/main/kotlin/com/pushizo/pushizo_flutter/PushizoFlutterPlugin.kt');
+      expect(kt, contains('"placementsList" -> Pushizo.Placements.list(call.argument<String>("key").orEmpty(), call.argument<Int>("limit") ?: 1) { messages ->'));
+      expect(kt, contains('rememberPlacementMessages(messages)\n                        result.success(messages.map { it.toJson() })'));
+      expect(kt, contains('placementMessage(call)?.let { Pushizo.Placements.reportImpression(it) }'));
+      expect(kt, contains('placementMessage(call)?.let { Pushizo.Placements.reportClick(it, call.argument<String>("buttonId").orEmpty()) }'));
+      expect(kt, contains('placementMessage(call)?.let { Pushizo.Placements.reportDismiss(it) }'));
+      expect(kt, contains('const val MAX_PLACEMENT_MESSAGES = 50'));
+      expect(kt, contains('while (placementMessages.size > MAX_PLACEMENT_MESSAGES) placementMessages.remove(placementMessages.keys.first())'));
+      expect(kt, contains('return placementMessages[id] ?: run { HsLog.d('));
+      final swift = read('ios/Classes/PushizoFlutterPlugin.swift');
+      expect(swift, contains('let messages = try await Pushizo.Placements.list(key, limit: limit)'));
+      expect(swift, contains('await MainActor.run { self.rememberPlacementMessages(messages) }'));
+      expect(swift, contains('return messages.compactMap { Self.json(\$0) }'));
+      expect(swift, contains('if let message = placementMessage(args) { Pushizo.Placements.reportImpression(message) }'));
+      expect(swift, contains('if let message = placementMessage(args) { Pushizo.Placements.reportClick(message, buttonId: args["buttonId"] as? String ?? "") }'));
+      expect(swift, contains('if let message = placementMessage(args) { Pushizo.Placements.reportDismiss(message) }'));
+      expect(swift, contains('private static let maxPlacementMessages = 50'));
+      // Yerel SDK'nın geçersiz anahtar/limit hatası INVALID_ARGUMENT olarak döner.
+      expect(swift, contains('} catch HSError.invalidArgument(let message) {\n                DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGUMENT"'));
     });
   });
 

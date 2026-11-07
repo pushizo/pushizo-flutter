@@ -11,7 +11,7 @@
 
 ## English
 
-**Pushizo Flutter SDK** — One Dart API for iOS, Android and the web: push notifications, in-app messages, notification inbox, users, tags and aliases, email and SMS subscriptions, preferences, live chat and Live Activities (iOS). Wraps the native Pushizo Android and iOS SDKs.
+**Pushizo Flutter SDK** — One Dart API for iOS, Android and the web: push notifications, in-app messages, embedded placements, feature flags, notification inbox, users, tags and aliases, email and SMS subscriptions, preferences, live chat and Live Activities (iOS). Wraps the native Pushizo Android and iOS SDKs.
 
 ```bash
 flutter pub add pushizo_flutter
@@ -61,11 +61,28 @@ Mesajlar `seq` ile sıralanır; ağ yokken gönderilen mesaj `pending` döner ve
 Ayrıntı: [android rehberi](https://docs.pushizo.com/docs/sdk/android) / [ios rehberi](https://docs.pushizo.com/docs/sdk/ios) → "Canlı sohbet".
 Flutter web'de sohbet Web SDK widget'ıyla sunulur; `Pushizo.Chat` yöntemleri `PLATFORM_NOT_SUPPORTED` döner.
 
+## Gömülü yerleşimler ve özellik bayrakları
+
+```dart
+final messages = await Pushizo.Placements.list('home_top', limit: 1); // çizim uygulamanın; anahtar ^[a-z][a-z0-9_.-]{0,63}$, limit 1-10
+await Pushizo.Placements.reportImpression(messages.first);           // reportClick(m, buttonId), reportDismiss(m)
+
+await Pushizo.FeatureFlags.refresh();                                  // oturum başında yerel SDK zaten yeniler
+if (await Pushizo.FeatureFlags.isEnabled('new_checkout')) { /* … */ }
+final limit = await Pushizo.FeatureFlags.getValue('cart_limit', defaultValue: 3); // String | num | bool | Map | List
+```
+
+Yerleşim listesi `PushizoInAppMessage` döndürür; rapor çağrıları son listeden gelen mesajla yapılır. Flutter web'de her iki
+API sayfadaki Web SDK'ya iletilir. Ayrıntı: [flutter rehberi](https://docs.pushizo.com/docs/sdk/flutter) → "Gömülü yerleşimler", "Özellik bayrakları".
+
 ## Konum
 
 `Pushizo.Location.requestPermission()`, `setShared(bool)`, `isShared` — yalnızca ön planda, kullanıcı izniyle;
 `setShared(false)` sunucudaki konumu siler. Android manifest ve iOS `NSLocationWhenInUseUsageDescription` gereksinimleri
 [flutter rehberi](https://docs.pushizo.com/docs/sdk/flutter) → "Konum".
+
+Arka plan bölge izleme (varsayılan kapalı): `Pushizo.Location.setGeofencingEnabled(true)`, `isGeofencingEnabled`.
+Köprü izin istemez; arka plan konum iznini ve manifest/Info.plist girdilerini uygulama ekler. Web'de etkisizdir.
 
 ## Live Activities (iOS)
 
