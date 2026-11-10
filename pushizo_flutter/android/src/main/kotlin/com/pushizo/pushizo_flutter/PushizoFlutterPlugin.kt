@@ -20,6 +20,8 @@ import com.pushizo.sdk.HsInAppLifecycleEvent
 import com.pushizo.sdk.HsInAppLifecycleListener
 import com.pushizo.sdk.HsInAppMessage
 import com.pushizo.sdk.HsInAppRenderer
+import com.pushizo.sdk.HsContentCard
+import com.pushizo.sdk.HsContentCardFeed
 import com.pushizo.sdk.HsInboxItem
 import com.pushizo.sdk.HsInboxPage
 import com.pushizo.sdk.HsLog
@@ -253,6 +255,9 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
                 "inboxMarkAllRead" -> Pushizo.Inbox.markAllRead(reply(result) { it })
                 "inboxArchive" -> Pushizo.Inbox.archive(call.argument<String>("id")!!, reply(result) { null })
                 "inboxUnreadCount" -> Pushizo.Inbox.unreadCount(reply(result) { it })
+                // İçerik kartları (ADR-0082)
+                "contentCardsList" -> Pushizo.ContentCards.list(call.argument<Int>("limit") ?: 50, reply(result) { it.toMap() })
+                "contentCardEvent" -> contentCardEvent(call.argument<String>("id") ?: "", call.argument<String>("event"), result)
                 // Gömülü yerleşimler (ADR-0068): mesajlar ham JSON olarak Dart'a gider; rapor çağrıları için kimliğe göre
                 // saklanır (geçersiz anahtar/limit → yerel SDK IllegalArgumentException → INVALID_ARGUMENT).
                 "placementsList" -> Pushizo.Placements.list(call.argument<String>("key").orEmpty(), call.argument<Int>("limit") ?: 1) { messages ->
@@ -472,6 +477,21 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
         "id" to id, "messageId" to messageId, "title" to title, "body" to body, "url" to url, "imageUrl" to imageUrl,
         "data" to data, "read" to read, "readAt" to readAt, "archivedAt" to archivedAt, "expiresAt" to expiresAt, "createdAt" to createdAt,
     )
+    /** Kart olayı (ADR-0082); olay adı kanal yöntemi değildir, bu yüzden `when` dalı yerine koşul zinciri. */
+    private fun contentCardEvent(id: String, event: String?, result: MethodChannel.Result) {
+        val cb = reply<HsContentCard>(result) { it.toMap() }
+        if (event == "impression") Pushizo.ContentCards.logImpression(id, cb)
+        else if (event == "click") Pushizo.ContentCards.logClick(id, cb)
+        else if (event == "dismiss") Pushizo.ContentCards.dismiss(id, cb)
+        else result.error("PUSHIZO_INVALID_ARGUMENT", "Kart olayı impression, click veya dismiss olmalı.", null)
+    }
+
+    private fun HsContentCard.toMap() = mapOf(
+        "id" to id, "messageId" to messageId, "type" to type.wire, "title" to title, "body" to body, "url" to url, "imageUrl" to imageUrl,
+        "buttonText" to buttonText, "data" to data, "pinned" to pinned, "priority" to priority, "viewed" to viewed, "clicked" to clicked,
+        "expiresAt" to expiresAt, "createdAt" to createdAt,
+    )
+    private fun HsContentCardFeed.toMap() = mapOf("cards" to cards.map { it.toMap() }, "unviewedCount" to unviewedCount)
     private fun HsInboxPage.toMap() = mapOf("items" to items.map { it.toMap() }, "unreadCount" to unreadCount, "nextCursor" to nextCursor, "hasMore" to hasMore)
     private fun HsPreference.toMap() = mapOf("category" to category, "channel" to channel, "optedIn" to optedIn, "explicit" to explicit, "source" to source, "updatedAt" to updatedAt)
     private fun HsMessageCategory.toMap() = mapOf("key" to key, "name" to name, "description" to description, "channels" to channels, "defaultOptedIn" to defaultOptedIn)

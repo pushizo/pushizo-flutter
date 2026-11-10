@@ -224,6 +224,16 @@ class JsWebSdkFacade implements WebSdkFacade {
   }
 
   @override
+  Future<Map<Object?, Object?>> contentCardsList({int? limit}) async =>
+      _map(await _call(_ns('ContentCards'), 'list', [if (limit != null) limit.toJS]));
+
+  @override
+  Future<Map<Object?, Object?>> contentCardEvent(String id, String event) async {
+    final method = switch (event) { 'impression' => 'logImpression', 'click' => 'logClick', _ => 'dismiss' };
+    return _map(await _call(_ns('ContentCards'), method, [id.toJS]));
+  }
+
+  @override
   Future<void> setLocationShared(bool shared) => _call(_ns('Location'), 'setShared', [shared.toJS]);
 
   @override

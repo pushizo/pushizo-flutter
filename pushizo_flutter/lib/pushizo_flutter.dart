@@ -200,6 +200,9 @@ class Pushizo {
   static const Notifications = _Notifications();
   static const InAppMessages = _InAppMessages();
   static const Inbox = _Inbox();
+
+  /// İçerik kartları (ADR-0082).
+  static const ContentCards = _ContentCards();
   static const Placements = _Placements();
   static const FeatureFlags = _FeatureFlags();
   static const Chat = _Chat();
@@ -558,6 +561,33 @@ class _Inbox {
   Future<void> archive(String id) => Pushizo._channel.invokeMethod<void>('inboxArchive', {'id': id});
 
   Future<int> unreadCount() async => (await Pushizo._channel.invokeMethod<int>('inboxUnreadCount')) ?? 0;
+}
+
+/// İçerik kartları (ADR-0082): kalıcı kart akışı (`content_card` mesajları); kartlar bildirim kutusunda görünmez.
+class _ContentCards {
+  const _ContentCards();
+
+  /// Kart akışı (sabitlenmiş → öncelik → yeni; `limit` 1-100).
+  Future<PushizoContentCardFeed> list({int limit = 50}) async {
+    if (limit < 1 || limit > 100) throw ArgumentError.value(limit, 'limit', '1-100 olmalı');
+    final result = await Pushizo._channel.invokeMethod<Map<Object?, Object?>>('contentCardsList', {'limit': limit});
+    return PushizoContentCardFeed.fromMap(result ?? const {});
+  }
+
+  Future<PushizoContentCard> _event(String id, String event) async {
+    if (id.isEmpty) throw ArgumentError.value(id, 'id', 'kart kimliği gerekli');
+    final result = await Pushizo._channel.invokeMethod<Map<Object?, Object?>>('contentCardEvent', {'id': id, 'event': event});
+    return PushizoContentCard.fromMap(result!);
+  }
+
+  /// Kart ekranda gösterildi (ilk gösterim kaydedilir).
+  Future<PushizoContentCard> logImpression(String id) => _event(id, 'impression');
+
+  /// Karta tıklandı (gösterim ve okundu da sayılır).
+  Future<PushizoContentCard> logClick(String id) => _event(id, 'click');
+
+  /// Kart kapatıldı; akıştan kalkar.
+  Future<PushizoContentCard> dismiss(String id) => _event(id, 'dismiss');
 }
 
 /// Gömülü yerleşimler (ADR-0068): uygulamanın ayırdığı alana içerik. [list] modeli döndürür, çizim uygulamanındır;

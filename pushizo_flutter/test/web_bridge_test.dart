@@ -224,6 +224,34 @@ void main() {
       expect(sdk.calls.last, ['inboxArchive', 'i1']);
     });
 
+    test('içerik kartları (ADR-0082): akış ve olaylar Web SDK ContentCards ile', () async {
+      final card = {
+        'id': 'c1',
+        'messageId': 'm1',
+        'type': 'captioned_image',
+        'title': 'Kart',
+        'buttonText': 'İncele',
+        'data': {'k': 'v'},
+        'pinned': true,
+        'priority': 70.0,
+        'viewed': false,
+        'clicked': false,
+        'expiresAt': null,
+        'createdAt': '2026-11-10T10:00:00.000Z',
+      };
+      sdk.values['contentCardsList'] = {'cards': [card], 'unviewedCount': 1.0};
+      sdk.values['contentCardEvent'] = {...card, 'clicked': true, 'viewed': true};
+      final feed = PushizoContentCardFeed.fromMap((await call('contentCardsList', {'limit': 10}) as Map).cast());
+      expect(feed.unviewedCount, 1);
+      expect(feed.cards.single.type, PushizoContentCardType.captionedImage);
+      expect(feed.cards.single.priority, 70);
+      expect(feed.cards.single.createdAt, DateTime.utc(2026, 11, 10, 10));
+      final clicked = PushizoContentCard.fromMap((await call('contentCardEvent', {'id': 'c1', 'event': 'click'}) as Map).cast());
+      expect(clicked.clicked, isTrue);
+      expect(sdk.calls.last, ['contentCardEvent', 'c1', 'click']);
+      await expectLater(call('contentCardEvent', {'id': 'c1', 'event': 'open'}), throwsA(isA<PlatformException>()));
+    });
+
     Map<String, Object?> webPreferences() => {
           'preferences': [
             {'category': 'orders', 'channel': null, 'optedIn': true, 'explicit': false, 'source': null, 'updatedAt': null},
@@ -618,6 +646,11 @@ class FakeWebSdk implements WebSdkFacade {
   Future<void> inboxArchive(String id) => _record('inboxArchive', [id]);
   @override
   Future<num> inboxUnreadCount() async => (await _record<num?>('inboxUnreadCount')) ?? 0;
+  @override
+  Future<Map<Object?, Object?>> contentCardsList({int? limit}) async => (await _record<Map<Object?, Object?>?>('contentCardsList', [limit])) ?? {};
+  @override
+  Future<Map<Object?, Object?>> contentCardEvent(String id, String event) async =>
+      (await _record<Map<Object?, Object?>?>('contentCardEvent', [id, event])) ?? {};
   @override
   Future<void> setLocationShared(bool shared) => _record('setLocationShared', [shared]);
   @override

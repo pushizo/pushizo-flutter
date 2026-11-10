@@ -176,6 +176,17 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
             inbox(result) { try await Pushizo.Inbox.archive(args["id"] as? String ?? ""); return nil }
         case "inboxUnreadCount":
             inbox(result) { try await Pushizo.Inbox.unreadCount() }
+        // İçerik kartları (ADR-0082)
+        case "contentCardsList":
+            inbox(result) { try await Self.map(Pushizo.ContentCards.list(limit: args["limit"] as? Int ?? 50)) }
+        case "contentCardEvent":
+            let id = args["id"] as? String ?? ""
+            switch args["event"] as? String {
+            case "impression": inbox(result) { Self.map(try await Pushizo.ContentCards.logImpression(id)) }
+            case "click": inbox(result) { Self.map(try await Pushizo.ContentCards.logClick(id)) }
+            case "dismiss": inbox(result) { Self.map(try await Pushizo.ContentCards.dismiss(id)) }
+            default: result(FlutterError(code: "PUSHIZO_INVALID_ARGUMENT", message: "Kart olayı impression, click veya dismiss olmalı.", details: nil))
+            }
         // Gömülü yerleşimler (ADR-0068): mesajlar ham JSON olarak Dart'a gider; rapor çağrıları için kimliğe göre saklanır.
         case "placementsList":
             let key = args["key"] as? String ?? ""
@@ -444,6 +455,17 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
 
     private static func map(_ r: HSPreferencesResult) -> [String: Any] {
         ["data": r.preferences.map { map($0) }, "categories": r.categories.map { map($0) }]
+    }
+
+    private static func map(_ card: HSContentCard) -> [String: Any] {
+        ["id": card.id, "messageId": card.messageId as Any, "type": card.type.rawValue, "title": card.title as Any, "body": card.body as Any,
+         "url": card.url as Any, "imageUrl": card.imageUrl as Any, "buttonText": card.buttonText as Any, "data": card.data,
+         "pinned": card.pinned, "priority": card.priority, "viewed": card.viewed, "clicked": card.clicked,
+         "expiresAt": millis(card.expiresAt), "createdAt": millis(card.createdAt)]
+    }
+
+    private static func map(_ feed: HSContentCardFeed) -> [String: Any] {
+        ["cards": feed.cards.map { map($0) }, "unviewedCount": feed.unviewedCount]
     }
 
     private static func map(_ page: HSInboxPage) -> [String: Any] {

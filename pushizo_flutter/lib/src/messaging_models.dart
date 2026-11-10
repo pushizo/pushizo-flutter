@@ -338,6 +338,91 @@ class PushizoInboxItem {
       );
 }
 
+/// İçerik kartı türü (ADR-0082). Bilinmeyen tür klasik sayılır.
+enum PushizoContentCardType {
+  classic,
+  captionedImage,
+  imageOnly;
+
+  static PushizoContentCardType fromWire(Object? value) => switch (value) {
+        'captioned_image' => PushizoContentCardType.captionedImage,
+        'image_only' => PushizoContentCardType.imageOnly,
+        _ => PushizoContentCardType.classic,
+      };
+}
+
+/// İçerik kartı (ADR-0082). Akış sabitlenmiş → öncelik → yeni sırasıyla gelir.
+class PushizoContentCard {
+  const PushizoContentCard({
+    required this.id,
+    required this.type,
+    this.messageId,
+    this.title,
+    this.body,
+    this.url,
+    this.imageUrl,
+    this.buttonText,
+    this.data = const {},
+    this.pinned = false,
+    this.priority = 0,
+    this.viewed = false,
+    this.clicked = false,
+    this.expiresAt,
+    this.createdAt,
+  });
+
+  final String id;
+  final PushizoContentCardType type;
+  final String? messageId;
+  final String? title;
+  final String? body;
+  final String? url;
+  final String? imageUrl;
+  final String? buttonText;
+  final Map<String, String> data;
+  final bool pinned;
+  final int priority;
+  final bool viewed;
+  final bool clicked;
+  final DateTime? expiresAt;
+  final DateTime? createdAt;
+
+  /// Platform kanalı haritasından (zamanlar epoch milisaniye, UTC).
+  factory PushizoContentCard.fromMap(Map<Object?, Object?> map) => PushizoContentCard(
+        id: map['id'] as String,
+        type: PushizoContentCardType.fromWire(map['type']),
+        messageId: map['messageId'] as String?,
+        title: map['title'] as String?,
+        body: map['body'] as String?,
+        url: map['url'] as String?,
+        imageUrl: map['imageUrl'] as String?,
+        buttonText: map['buttonText'] as String?,
+        data: (map['data'] as Map?)?.map((k, v) => MapEntry(k.toString(), v.toString())) ?? const {},
+        pinned: map['pinned'] == true,
+        priority: (map['priority'] as num?)?.toInt() ?? 0,
+        viewed: map['viewed'] == true,
+        clicked: map['clicked'] == true,
+        expiresAt: _epochMs(map['expiresAt']),
+        createdAt: _epochMs(map['createdAt']),
+      );
+}
+
+/// Kart akışı ve görülmemiş kart sayısı.
+class PushizoContentCardFeed {
+  const PushizoContentCardFeed({required this.cards, required this.unviewedCount});
+
+  final List<PushizoContentCard> cards;
+  final int unviewedCount;
+
+  factory PushizoContentCardFeed.fromMap(Map<Object?, Object?> map) {
+    final cards = ((map['cards'] as List?) ?? const [])
+        .whereType<Map>()
+        .map((m) => PushizoContentCard.fromMap(m.cast<Object?, Object?>()))
+        .toList();
+    return PushizoContentCardFeed(cards: cards, unviewedCount: (map['unviewedCount'] as num?)?.toInt() ?? cards.where((c) => !c.viewed).length);
+  }
+}
+
 /// Bildirim kutusu sayfası (yeniden eskiye).
 class PushizoInboxPage {
   const PushizoInboxPage({required this.items, required this.unreadCount, required this.hasMore, this.nextCursor});

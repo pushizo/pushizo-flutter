@@ -90,6 +90,9 @@ abstract interface class WebSdkFacade {
   Future<Map<Object?, Object?>> inboxMarkAllRead();
   Future<void> inboxArchive(String id);
   Future<num> inboxUnreadCount();
+  /// İçerik kartları (ADR-0082): Web SDK `ContentCards`.
+  Future<Map<Object?, Object?>> contentCardsList({int? limit});
+  Future<Map<Object?, Object?>> contentCardEvent(String id, String event);
 
   Future<void> setLocationShared(bool shared);
   Future<bool> locationShared();
@@ -221,6 +224,7 @@ class PushizoWebBridge {
     'setForegroundHandlerEnabled', 'displayForegroundNotification', 'sendEvent', 'setLogLevel',
     'addTriggers', 'removeTriggers', 'clearTriggers', 'getTriggers', 'setScreen', 'setInAppPaused', 'getInAppPaused',
     'inboxList', 'inboxMarkRead', 'inboxMarkAllRead', 'inboxArchive', 'inboxUnreadCount',
+    'contentCardsList', 'contentCardEvent',
     'setLocationShared', 'getLocationShared', 'requestLocationPermission', 'setGeofencingEnabled', 'getGeofencingEnabled',
     'placementsList', 'placementsReportImpression', 'placementsReportClick', 'placementsReportDismiss',
     'featureFlagsRefresh', 'featureFlagsIsEnabled', 'featureFlagsGetValue',
@@ -391,6 +395,15 @@ class PushizoWebBridge {
         return null;
       case 'inboxUnreadCount':
         return (await _sdk.inboxUnreadCount()).toInt();
+      case 'contentCardsList':
+        final limit = args['limit'];
+        return mapContentCardFeed(await _sdk.contentCardsList(limit: limit is num ? limit.toInt() : null));
+      case 'contentCardEvent':
+        final event = _requireNonEmpty(args, 'event');
+        if (!const {'impression', 'click', 'dismiss'}.contains(event)) {
+          throw PlatformException(code: 'PUSHIZO_INVALID_ARGUMENT', message: 'Kart olayı impression, click veya dismiss olmalı.');
+        }
+        return mapContentCard(await _sdk.contentCardEvent(_requireNonEmpty(args, 'id'), event));
       case 'setLocationShared':
         await _sdk.setLocationShared(args['shared'] == true);
         return null;
@@ -622,6 +635,32 @@ class PushizoWebBridge {
         'archivedAt': _millis(item['archivedAt']),
         'expiresAt': _millis(item['expiresAt']),
         'createdAt': _millis(item['createdAt']),
+      };
+
+  /// Web SDK kartı → köprü biçimi (zamanlar epoch ms; ADR-0082).
+  static Map<String, Object?> mapContentCard(Map<Object?, Object?> card) => {
+        'id': card['id'],
+        'messageId': card['messageId'],
+        'type': card['type'],
+        'title': card['title'],
+        'body': card['body'],
+        'url': card['url'],
+        'imageUrl': card['imageUrl'],
+        'buttonText': card['buttonText'],
+        'data': _stringMap(card['data']),
+        'pinned': card['pinned'] == true,
+        'priority': _int(card['priority']),
+        'viewed': card['viewed'] == true,
+        'clicked': card['clicked'] == true,
+        'expiresAt': _millis(card['expiresAt']),
+        'createdAt': _millis(card['createdAt']),
+      };
+
+  static Map<String, Object?> mapContentCardFeed(Map<Object?, Object?> feed) => {
+        'cards': [
+          for (final card in (feed['cards'] as List?) ?? const []) mapContentCard((card as Map).cast<Object?, Object?>()),
+        ],
+        'unviewedCount': _int(feed['unviewedCount']),
       };
 
   static Map<String, Object?> mapInboxPage(Map<Object?, Object?> page) => {
