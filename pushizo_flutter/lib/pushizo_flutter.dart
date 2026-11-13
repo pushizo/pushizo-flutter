@@ -41,6 +41,7 @@ part 'src/chat_models.dart';
 part 'src/in_app_view.dart';
 part 'src/messaging_models.dart';
 part 'src/models.dart';
+part 'src/strings_gen.dart';
 
 /// Günlük seviyesi.
 enum PushizoLogLevel { none, error, warn, info, debug }

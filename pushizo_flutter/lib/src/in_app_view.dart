@@ -388,7 +388,10 @@ class _InAppCarousel extends StatelessWidget {
 
   /// Erişilebilirlik etiketi (Android/iOS SDK'larıyla aynı biçim).
   static String cardLabel(String? languageCode, int index, int total, String title) =>
-      languageCode == 'tr' ? 'Kart $index/$total: $title' : 'Card $index/$total: $title';
+      (_carouselCardLabels[_resolvePushizoLanguage(languageCode)] ?? _carouselCardLabels['en']!)
+          .replaceAll('{n}', '$index')
+          .replaceAll('{total}', '$total')
+          .replaceAll('{title}', title);
 
   @override
   Widget build(BuildContext context) {
