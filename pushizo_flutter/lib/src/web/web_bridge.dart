@@ -43,7 +43,10 @@ abstract interface class WebSdkFacade {
 
   Future<void> init(Map<String, Object?> options);
   Future<void> setConsentGiven(bool given);
-  Future<void> login(String externalId, {String? identityHash, String? jwt});
+
+  /// `login(externalId, proof?, profile?)`; [profile] (`email`, `sms`, `tags`, `aliases`) Web SDK'da girişten önce
+  /// doğrulanır ve girişle birlikte ayarlanır.
+  Future<void> login(String externalId, {String? identityHash, String? jwt, Map<String, Object?>? profile});
   Future<void> updateUserJwt(String jwt);
   Future<void> logout();
 
@@ -57,6 +60,9 @@ abstract interface class WebSdkFacade {
   Future<void> addSms(String phoneNumber);
   Future<void> removeSms(String phoneNumber);
   Future<void> setLanguage(String code);
+
+  /// `User.setProperty(key, value)`; `null` özelliği siler.
+  Future<void> setProperty(String key, Object? value);
   Future<String?> externalId();
   Future<String?> userId();
   Future<Map<Object?, Object?>> getPreferences();
@@ -75,7 +81,11 @@ abstract interface class WebSdkFacade {
   Future<String> requestNotificationPermission();
   Future<void> clearAllNotifications();
 
-  Future<void> sendEvent(String name, Map<String, Object?> properties, double? value);
+  /// `Notifications.setBadgeCount(count)` (App Badging API); tarayıcı desteklemiyorsa `false`.
+  Future<bool> setBadgeCount(int count);
+
+  /// `Session.sendEvent(name, properties, value, {eventId})`.
+  Future<void> sendEvent(String name, Map<String, Object?> properties, double? value, {String? eventId});
   Future<void> setLogLevel(String level);
 
   Future<void> addTriggers(Map<String, String> triggers);
@@ -101,6 +111,29 @@ abstract interface class WebSdkFacade {
   Future<bool> locationShared();
   Future<bool> requestLocationPermission(String? rationale);
 
+  /// `Location.permissionGranted`: tarayıcı konum izninin son bilinen durumu (istem açmaz).
+  Future<bool> locationPermissionGranted();
+
+  /// `Chat.getConfig(refresh)`: sohbet ayarları (Web SDK alan adlarıyla: `within_business_hours`, `attachments` …).
+  Future<Map<Object?, Object?>> chatConfig(bool refresh);
+
+  /// `Chat.getConversation()` ve ardından `Chat.unreadCount`: `{conversation, unread_count}` (`conversation` yoksa `null`).
+  Future<Map<Object?, Object?>> chatConversation();
+
+  /// `Chat.unreadCount` (son bilinen; ağ çağrısı yok).
+  Future<num> chatUnreadCount();
+
+  /// `Chat.getUnreadCount()` (sunucudan yeniler).
+  Future<num> chatRefreshUnreadCount();
+  Future<void> chatSetTyping(bool typing);
+  Future<String> chatAttachmentUrl(String attachmentId, bool download);
+
+  /// `Chat.show({open: true})`: sohbet widget'ını yükler ve açar.
+  Future<void> chatShow();
+
+  /// `Chat.hide()`: widget'ı sayfadan kaldırır ve canlı akışı kapatır.
+  Future<void> chatHide();
+
   /// `Placements.list(key, {limit})`; her mesaj sunucu JSON'u metni olarak.
   Future<List<String>> placementsList(String key, int limit);
 
@@ -124,6 +157,12 @@ abstract interface class WebSdkFacade {
 
   /// [listener] `willDisplay`, `didDisplay`, `willDismiss` veya `didDismiss` ve mesaj kimliğiyle çağrılır.
   void addInAppLifecycleListener(void Function(String event, String messageId) listener);
+
+  /// `FeatureFlags.addObserver`: değerler sunucudan başarıyla yenilendiğinde çağrılır.
+  void addFeatureFlagObserver(void Function() observer);
+
+  /// `Inbox.addObserver`: olay `{type, itemId?, unreadCount}`.
+  void addInboxObserver(void Function(Map<Object?, Object?> event) observer);
 }
 
 /// Web SDK hatasını köprünün hata koduna çevirir: API hatasının kodu aynen; geçersiz e-posta/telefon
@@ -198,25 +237,22 @@ class PushizoWebBridge {
     'inAppDismissed': "Web'de in-app mesajları Web SDK çizer; Flutter çizim geri bildirimi kullanılmaz",
     'inAppClosed': "Web'de in-app mesajları Web SDK çizer; Flutter çizim geri bildirimi kullanılmaz",
     'chatStart': _chatOnWeb,
-    'chatGetConfig': _chatOnWeb,
-    'chatGetConversation': _chatOnWeb,
     'chatGetMessages': _chatOnWeb,
     'chatSendMessage': _chatOnWeb,
     'chatSendAttachment': _chatOnWeb,
     'chatMarkRead': _chatOnWeb,
-    'chatRefreshUnreadCount': _chatOnWeb,
-    'chatGetUnreadCount': _chatOnWeb,
     'chatLeaveOfflineMessage': _chatOnWeb,
-    'chatSetTyping': _chatOnWeb,
     'chatStartListening': _chatOnWeb,
     'chatStopListening': _chatOnWeb,
-    'chatAttachmentUrl': _chatOnWeb,
     'chatGetVisitorId': _chatOnWeb,
   };
 
-  /// Flutter web'de canlı sohbet Web SDK'nın sohbet widget'ıyla sunulur; `Pushizo.Chat` yalnızca Android ve iOS'tadır.
+  /// Flutter web'de mesajlaşma Web SDK'nın sohbet widget'ıyla yapılır (`Pushizo.Chat.show`): Web SDK'nın mesaj listesi
+  /// modeli, sıra numarasız okundu işareti ve `Blob` ekleri Dart sohbet API'siyle birebir eşleşmez. Hazır arayüz, ayarlar,
+  /// konuşma durumu, okunmamış sayısı, yazıyor bilgisi ve ek adresi web'de de desteklenir.
   static const String _chatOnWeb =
-      "Flutter web'de canlı sohbet Web SDK widget'ıyla sunulur; Pushizo.Chat yalnızca Android ve iOS'ta kullanılabilir";
+      "Flutter web'de mesajlaşma Web SDK sohbet widget'ıyla yapılır (Pushizo.Chat.show); bu yöntem yalnızca Android ve "
+      "iOS'ta kullanılabilir";
 
   /// Web'de desteklenen kanal yöntemleri.
   static const Set<String> supportedMethods = {
@@ -233,24 +269,38 @@ class PushizoWebBridge {
     'placementsList', 'placementsReportImpression', 'placementsReportClick', 'placementsReportDismiss',
     'featureFlagsRefresh', 'featureFlagsIsEnabled', 'featureFlagsGetValue',
     'isInitialized', 'getEmails', 'getSmsNumbers', 'registerAdm', 'setAdsPersonalizationConsent', 'getConsents',
-    'setAdvertisingId', 'setBadgeCount', 'getLocationPermissionGranted', 'getLocationBackgroundPermissionGranted',
-    'requestLocationBackgroundPermission', 'chatIsListening',
+    'setAdvertisingId', 'setBadgeCount', 'getBadgeCount', 'getLocationPermissionGranted',
+    'getLocationBackgroundPermissionGranted', 'requestLocationBackgroundPermission', 'chatIsListening',
+    'setProperty', 'chatShow', 'chatHide', 'chatIsPresented', 'chatGetConfig', 'chatGetConversation',
+    'chatRefreshUnreadCount', 'chatGetUnreadCount', 'chatSetTyping', 'chatAttachmentUrl',
   };
 
-  /// Web'de karşılığı olmayan ama zararsız tamamlanan yöntemler (Web SDK yüklenmemiş olsa da hata vermez): reklam kimliği,
-  /// rozet ve ADM kaydı etkisizdir; e-posta/SMS listesi Web SDK'da sunulmadığından boştur; konum izni durumu, arka plan
-  /// konum izni ve sohbet akışı durumu `false` döner.
+  /// Web'de karşılığı olmayan ama zararsız tamamlanan yöntemler (Web SDK yüklenmemiş olsa da hata vermez): reklam kimliği
+  /// ve ADM kaydı etkisizdir; e-posta/SMS listesi Web SDK'da sunulmadığından boştur; arka plan konum izni ve sohbet akışı
+  /// durumu `false` döner.
   static const Map<String, Object?> _inertResults = {
     'setAdvertisingId': null,
-    'setBadgeCount': null,
     'registerAdm': null,
     'getEmails': <String>[],
     'getSmsNumbers': <String>[],
-    'getLocationPermissionGranted': false,
     'getLocationBackgroundPermissionGranted': false,
     'requestLocationBackgroundPermission': false,
     'chatIsListening': false,
   };
+
+  /// Web SDK'ya iletilen ama Web SDK yüklenmemişken hata vermeden bu değeri döndüren durum/rozet yöntemleri (önceki
+  /// sürümde etkisiz olan çağrılar zararsız kalır).
+  static const Map<String, Object?> _resultsWhenNotLoaded = {
+    'setBadgeCount': false,
+    'getLocationPermissionGranted': false,
+    'chatHide': false,
+  };
+
+  /// Bu oturumda başarıyla ayarlanan son rozet sayısı (tarayıcı rozeti okutmaz).
+  int _badgeCount = 0;
+
+  /// Sohbet widget'ı `chatShow` ile sayfaya eklendi ve `chatHide` ile kaldırılmadı mı.
+  bool _chatShown = false;
 
   /// `initialize` başarıyla tamamlandı mı (`Pushizo.isInitialized`).
   bool _initialized = false;
@@ -284,6 +334,9 @@ class PushizoWebBridge {
     if (call.method.startsWith('delivery')) return false;
     if (_inertResults.containsKey(call.method)) return _inertResults[call.method];
     if (call.method == 'isInitialized') return _initialized && _sdk.isLoaded;
+    if (call.method == 'getBadgeCount') return _badgeCount;
+    if (call.method == 'chatIsPresented') return _chatShown;
+    if (!_sdk.isLoaded && _resultsWhenNotLoaded.containsKey(call.method)) return _resultsWhenNotLoaded[call.method];
     if (!_sdk.isLoaded) throw PlatformException(code: 'NOT_READY', message: notLoadedMessage);
     final rawArgs = call.arguments;
     final args = rawArgs is Map ? rawArgs : const <Object?, Object?>{};
@@ -317,19 +370,28 @@ class PushizoWebBridge {
         return null;
       case 'login':
         final externalId = _requireNonEmpty(args, 'externalId');
-        await _sdk.login(externalId, identityHash: _optionalString(args, 'identityHash'), jwt: _optionalString(args, 'jwt'));
-        // Profil (Android `HsUserProfile` ile aynı sıra): e-posta, SMS, etiketler, alias'lar; doğrulama Web SDK'dadır.
+        // Profil Web SDK `login(externalId, proof, profile)` çağrısına verilir: e-posta/telefon/alias girişten önce
+        // doğrulanır (geçersizse giriş yapılmaz), alanlar girişle birlikte ayarlanır (Android/iOS ile aynı davranış).
         final profile = args['profile'];
+        Map<String, Object?>? webProfile;
         if (profile is Map) {
           final email = profile['email'];
           final sms = profile['sms'];
           final tags = _stringMap(profile['tags']);
           final aliases = _stringMap(profile['aliases']);
-          if (email is String) await _sdk.addEmail(email);
-          if (sms is String) await _sdk.addSms(sms);
-          if (tags.isNotEmpty) await _sdk.addTags(tags);
-          if (aliases.isNotEmpty) await _sdk.addAliases(aliases);
+          webProfile = {
+            if (email is String) 'email': email,
+            if (sms is String) 'sms': sms,
+            if (tags.isNotEmpty) 'tags': tags,
+            if (aliases.isNotEmpty) 'aliases': aliases,
+          };
         }
+        await _sdk.login(
+          externalId,
+          identityHash: _optionalString(args, 'identityHash'),
+          jwt: _optionalString(args, 'jwt'),
+          profile: webProfile,
+        );
         return null;
       case 'updateUserJwt':
         // Boş belirteç Android/iOS köprüleriyle aynı biçimde INVALID_ARGUMENT döner.
@@ -354,6 +416,13 @@ class PushizoWebBridge {
         return null;
       case 'setLanguage':
         await _sdk.setLanguage(_requireNonEmpty(args, 'code'));
+        return null;
+      case 'setProperty':
+        final key = _requireNonEmpty(args, 'key').trim();
+        if (key.isEmpty || key.length > 64) {
+          throw PlatformException(code: 'INVALID_ARGUMENT', message: 'Özellik anahtarı 1-64 karakter olmalı');
+        }
+        await _sdk.setProperty(key, args['value']);
         return null;
       case 'getExternalId':
         return _sdk.externalId();
@@ -398,6 +467,18 @@ class PushizoWebBridge {
       case 'clearAll':
         await _sdk.clearAllNotifications();
         return null;
+      // Rozet (App Badging API): tarayıcı desteklemiyorsa ya da sayfadaki Web SDK sürümü rozeti sunmuyorsa `false`.
+      case 'setBadgeCount':
+        final count = args['count'];
+        final value = count is num && count > 0 ? count.toInt() : 0;
+        bool shown;
+        try {
+          shown = await _sdk.setBadgeCount(value);
+        } on WebSdkError {
+          shown = false;
+        }
+        if (shown) _badgeCount = value;
+        return shown;
       case 'setForegroundHandlerEnabled':
         _foregroundHandlerEnabled = args['enabled'] == true;
         return null;
@@ -412,6 +493,7 @@ class PushizoWebBridge {
           _requireNonEmpty(args, 'name'),
           properties is Map ? properties.map((k, v) => MapEntry(k.toString(), v)) : const {},
           value is num ? value.toDouble() : null,
+          eventId: _optionalString(args, 'eventId'),
         );
         return null;
       case 'setLogLevel':
@@ -466,6 +548,38 @@ class PushizoWebBridge {
       case 'requestLocationPermission':
         final rationale = _optionalString(args, 'rationale');
         return _sdk.requestLocationPermission(rationale == null || rationale.trim().isEmpty ? null : rationale);
+      case 'getLocationPermissionGranted':
+        return _sdk.locationPermissionGranted();
+      // Canlı sohbet (ADR-0040): hazır widget, ayarlar, konuşma durumu, okunmamış sayısı, yazıyor bilgisi ve ek adresi.
+      case 'chatShow':
+        // Sohbet app ayarında kapalıysa Web SDK widget'ı eklemez; durum buna göre tutulur.
+        if ((await _sdk.chatConfig(false))['enabled'] != true) return null;
+        await _sdk.chatShow();
+        _chatShown = true;
+        return null;
+      case 'chatHide':
+        final shown = _chatShown;
+        await _sdk.chatHide();
+        _chatShown = false;
+        return shown;
+      case 'chatGetConfig':
+        return mapChatConfig(await _sdk.chatConfig(true));
+      case 'chatGetConversation':
+        final state = await _sdk.chatConversation();
+        final conversation = state['conversation'];
+        return {
+          'conversation': conversation is Map ? mapChatConversation(conversation.cast<Object?, Object?>()) : null,
+          'unreadCount': _int(state['unread_count']),
+        };
+      case 'chatGetUnreadCount':
+        return (await _sdk.chatUnreadCount()).toInt();
+      case 'chatRefreshUnreadCount':
+        return (await _sdk.chatRefreshUnreadCount()).toInt();
+      case 'chatSetTyping':
+        await _sdk.chatSetTyping(args['typing'] == true);
+        return null;
+      case 'chatAttachmentUrl':
+        return _sdk.chatAttachmentUrl(_requireNonEmpty(args, 'attachmentId'), args['download'] == true);
       // Bölge izleme web'de yoktur (ADR-0065): açma etkisizdir, durum her zaman kapalıdır.
       case 'setGeofencingEnabled':
         return null;
@@ -604,6 +718,16 @@ class PushizoWebBridge {
     _sdk.addInAppLifecycleListener((event, messageId) {
       _emit({'type': 'inAppLifecycle', 'event': event, 'messageId': messageId});
     });
+    _sdk.addFeatureFlagObserver(() => _emit({'type': 'featureFlags'}));
+    // Olay türü `event` alanında taşınır; `type` kanal olay adına ayrılmıştır (Android/iOS köprüleriyle aynı).
+    _sdk.addInboxObserver((e) {
+      _emit({
+        'type': 'inboxChange',
+        'event': e['type'] as String? ?? '',
+        'itemId': e['itemId'] as String?,
+        'unreadCount': _int(e['unreadCount']),
+      });
+    });
   }
 
   /// Ön plan bildirimi: bilgi olayı her zaman gönderilir. Dart işleyicisi kayıtlıysa Web SDK kararı senkron istediğinden
@@ -726,7 +850,43 @@ class PushizoWebBridge {
         'hasMore': page['hasMore'] == true,
       };
 
-  /// Web SDK `{preferences, categories}` → köprü biçimi `{data, categories}` (zamanlar epoch ms).
+  /// Web SDK sohbet ayarları → `PushizoChatConfig.fromMap` biçimi (Android/iOS köprüleriyle aynı anahtarlar).
+  static Map<String, Object?> mapChatConfig(Map<Object?, Object?> config) {
+    final attachments = config['attachments'];
+    final a = attachments is Map ? attachments : const <Object?, Object?>{};
+    return {
+      'enabled': config['enabled'] == true,
+      'online': config['online'] == true,
+      'withinBusinessHours': config['within_business_hours'] == true,
+      'color': config['color'] as String?,
+      'textColor': config['text_color'] as String?,
+      'position': config['position'] as String?,
+      'theme': config['theme'] as String?,
+      'title': config['title'] as String?,
+      'greeting': config['greeting'] as String?,
+      'offlineMessage': config['offline_message'] as String?,
+      'collectEmailOffline': config['collect_email_offline'] == true,
+      'requireEmail': config['require_email'] == true,
+      'attachmentsEnabled': a['enabled'] == true,
+      'attachmentMaxBytes': _int(a['max_bytes']),
+      'attachmentTypes': _stringList(a['types']),
+      'language': config['language'] as String?,
+    };
+  }
+
+  /// Web SDK konuşması → `PushizoChatConversation` biçimi (zaman epoch ms).
+  static Map<String, Object?> mapChatConversation(Map<Object?, Object?> c) => {
+        'id': c['id'] as String?,
+        'status': c['status'] as String?,
+        'lastSeq': _int(c['last_seq']),
+        'agentLastReadSeq': _int(c['agent_last_read_seq']),
+        'visitorLastReadSeq': _int(c['visitor_last_read_seq']),
+        'unreadCount': _int(c['unread_count']),
+        'botActive': c['bot_active'] == true,
+        'assigneeName': c['assignee_name'] as String?,
+        'createdAt': _millis(c['created_at']),
+      };
+
   /// Web SDK tercih sonucundaki rıza kayıtları (`consents`) → köprü biçimi.
   static List<Map<String, Object?>> mapConsents(Map<Object?, Object?> result) => [
         for (final c in (result['consents'] as List?) ?? const [])

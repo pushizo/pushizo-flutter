@@ -711,12 +711,22 @@ void main() {
     });
 
     test('rozet: setBadgeCount ve clearBadge; negatif değer platforma gitmeden reddedilir', () async {
-      await Pushizo.Notifications.setBadgeCount(3);
-      await Pushizo.Notifications.clearBadge();
-      expect(() => Pushizo.Notifications.setBadgeCount(-1), throwsArgumentError);
-      expect(calls.map((c) => c.method).toList(), ['setBadgeCount', 'setBadgeCount']);
+      // Yerel sonuç yoksa (eski yerel taraf) false.
+      expect(await Pushizo.Notifications.setBadgeCount(3), isFalse);
+      expect(await Pushizo.Notifications.clearBadge(), isFalse);
+      expect(await Pushizo.Notifications.badgeCount, 0);
+      await expectLater(Pushizo.Notifications.setBadgeCount(-1), throwsArgumentError);
+      expect(calls.map((c) => c.method).toList(), ['setBadgeCount', 'setBadgeCount', 'getBadgeCount']);
       expect(calls[0].arguments, {'count': 3});
       expect(calls[1].arguments, {'count': 0});
+      // Yerel sonuç: rozet gösterilebiliyor mu ve saklanan sayı.
+      respond((call) => switch (call.method) { 'setBadgeCount' => true, 'getBadgeCount' => 3, _ => null });
+      expect(await Pushizo.Notifications.setBadgeCount(3), isTrue);
+      expect(await Pushizo.Notifications.clearBadge(), isTrue);
+      expect(await Pushizo.Notifications.badgeCount, 3);
+      // Dönüş tipi genişletmesi eski `Future<void>` kullanımını kırmaz.
+      final Future<void> legacy = Pushizo.Notifications.setBadgeCount(1);
+      await legacy;
     });
 
     test('konum izni durumu ve arka plan izni isteği; sohbet akışı durumu', () async {
@@ -742,7 +752,7 @@ void main() {
       expect(calls[3].arguments, {'rationale': null});
     });
 
-    test('yerel köprü Android: yerel SDK çağrıları, etkisiz rozet ve arka plan izni akışı', () {
+    test('yerel köprü Android: yerel SDK çağrıları, yerel rozet ve arka plan izni akışı', () {
       final kt = read('android/src/main/kotlin/com/pushizo/pushizo_flutter/PushizoFlutterPlugin.kt');
       expect(kt, contains('"isInitialized" -> result.success(Pushizo.isInitialized)'));
       expect(kt, contains('else Pushizo.login(externalId, userProfile(profile), call.argument<String>("identityHash"), call.argument<String>("jwt"))'));
@@ -753,7 +763,8 @@ void main() {
       expect(kt, contains('Pushizo.User.setAdsPersonalizationConsent(call.argument<Boolean>("granted") ?: false, reply(result) { it.toMap() })'));
       expect(kt, contains('Pushizo.User.getConsents(reply<List<HsConsent>>(result) { list -> list.map { it.toMap() } })'));
       expect(kt, contains('"setAdvertisingId" -> { Pushizo.Ads.setAdvertisingId(call.argument<String>("id")); result.success(null) }'));
-      expect(kt, contains('"setBadgeCount" -> result.success(null)'));
+      expect(kt, contains('"setBadgeCount" -> result.success(Pushizo.Notifications.setBadgeCount(call.argument<Number>("count")?.toInt() ?: 0))'));
+      expect(kt, contains('"getBadgeCount" -> result.success(Pushizo.Notifications.badgeCount)'));
       expect(kt, contains('"getLocationPermissionGranted" -> result.success(Pushizo.Location.permissionGranted)'));
       expect(kt, contains('"getLocationBackgroundPermissionGranted" -> result.success(Pushizo.Location.backgroundPermissionGranted)'));
       expect(kt, contains('"chatIsListening" -> result.success(Pushizo.Chat.isListening)'));
@@ -767,32 +778,185 @@ void main() {
       expect(kt, contains('pendingLocationPermission?.success(Pushizo.Location.backgroundPermissionGranted)'));
     });
 
-    test('yerel köprü iOS: yerel SDK çağrıları, profil doğrulaması ve CoreLocation izin durumu', () {
+    test('yerel köprü iOS: yerel SDK çağrıları, yerel profil girişi ve yerel konum izni durumu', () {
       final swift = read('ios/Classes/PushizoFlutterPlugin.swift');
       expect(swift, contains('case "isInitialized": result(Pushizo.isInitialized)'));
-      // Profil: doğrulama girişten önce, alanlar girişten sonra.
-      final invalid = swift.indexOf('if let email, HSContacts.normalizeEmail(email) == nil {');
-      final login = swift.indexOf('Pushizo.login(args["externalId"] as? String ?? "", identityHash: identityHash, jwt: jwt)');
-      final addEmail = swift.indexOf('if let email { Pushizo.User.addEmail(email) }');
-      expect(invalid, greaterThan(0));
-      expect(login, greaterThan(invalid));
-      expect(addEmail, greaterThan(login));
-      expect(swift, contains('if let sms, HSContacts.normalizePhone(sms) == nil {'));
-      expect(swift, contains('if let sms { Pushizo.User.addSms(sms) }'));
-      expect(swift, contains('Pushizo.User.addTags(tags)'));
-      expect(swift, contains('Pushizo.User.addAliases(aliases)'));
+      // Profil: kanıt denetimi önce (HS_ERROR), sonra yerel `login(_:profile:)`; doğrulama ve alanların yazılması yerel
+      // SDK'dadır, köprü kendi e-posta/SMS/tag/alias çağrılarını yapmaz.
+      final proof = swift.indexOf('if let message = Pushizo.loginProofError(identityHash: identityHash, jwt: jwt) {');
+      final plain = swift.indexOf('Pushizo.login(externalId, identityHash: identityHash, jwt: jwt)');
+      final native = swift.indexOf('try Pushizo.login(externalId, profile: Self.userProfile(profile), identityHash: identityHash, jwt: jwt)');
+      expect(proof, greaterThan(0));
+      expect(plain, greaterThan(proof));
+      expect(native, greaterThan(plain));
+      expect(swift, contains('} catch HSError.invalidArgument(let message) {\n                result(FlutterError(code: "INVALID_ARGUMENT", message: message, details: nil))\n            } catch HSError.notInitialized {'));
+      expect(swift, contains('HSUserProfile(email: map["email"] as? String, sms: map["sms"] as? String,'));
+      expect(swift, contains('tags: map["tags"] as? [String: String] ?? [:], aliases: map["aliases"] as? [String: String] ?? [:])'));
+      expect(swift, isNot(contains('if let email { Pushizo.User.addEmail(email) }')));
+      expect(swift, isNot(contains('Pushizo.User.addTags(tags)')));
       expect(swift, contains('case "getEmails": result(Pushizo.User.emails)'));
       expect(swift, contains('case "getSmsNumbers": result(Pushizo.User.smsNumbers)'));
       expect(swift, contains('case "registerAdm": result(nil)'));
       expect(swift, contains('Self.map(try await Pushizo.User.setAdsPersonalizationConsent(granted))'));
       expect(swift, contains(r'try await Pushizo.User.getConsents().map { Self.map($0) }'));
       expect(swift, contains('case "setAdvertisingId": Pushizo.Ads.setAdvertisingId(args["id"] as? String); result(nil)'));
-      expect(swift, contains('Pushizo.Notifications.setBadgeCount(max(0, (args["count"] as? NSNumber)?.intValue ?? 0))'));
-      expect(swift, contains('case "getLocationPermissionGranted": result(Self.locationPermission(background: false))'));
-      expect(swift, contains('case "getLocationBackgroundPermissionGranted": result(Self.locationPermission(background: true))'));
-      expect(swift, contains('return status == .authorizedAlways || (!background && status == .authorizedWhenInUse)'));
+      expect(swift, contains('Pushizo.Notifications.setBadgeCount(max(0, (args["count"] as? NSNumber)?.intValue ?? 0)); result(true)'));
+      expect(swift, contains('case "getBadgeCount": result(UIApplication.shared.applicationIconBadgeNumber)'));
+      expect(swift, contains('case "getLocationPermissionGranted": result(Pushizo.Location.permissionGranted)'));
+      expect(swift, contains('case "getLocationBackgroundPermissionGranted": result(Pushizo.Location.backgroundPermissionGranted)'));
+      expect(swift, isNot(contains('CLLocationManager')));
+      expect(swift, isNot(contains('import CoreLocation')));
       expect(swift, contains('Pushizo.Location.requestAlwaysPermission { granted in result(granted) }'));
       expect(swift, contains('case "chatIsListening": result(Pushizo.Chat.isListening)'));
+    });
+  });
+
+  group('Yerel API eşitliği (tur 3)', () {
+    void respond(Object? Function(MethodCall call) reply) {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return reply(call);
+      });
+    }
+
+    String read(String path) => File(path).readAsStringSync().replaceAll('\r\n', '\n');
+
+    test('User.setProperty: değer türüyle iletilir, null siler; geçersiz girdi platforma gitmez', () async {
+      await Pushizo.User.setProperty('first_name', 'Ali');
+      await Pushizo.User.setProperty(' level ', 7);
+      await Pushizo.User.setProperty('vip', true);
+      await Pushizo.User.setProperty('prefs', {'dark': true, 'tags': ['a', 2.5]});
+      await Pushizo.User.setProperty('first_name', null);
+      expect(calls.map((c) => c.method).toSet(), {'setProperty'});
+      expect(calls.map((c) => c.arguments).toList(), [
+        {'key': 'first_name', 'value': 'Ali'},
+        {'key': 'level', 'value': 7},
+        {'key': 'vip', 'value': true},
+        {'key': 'prefs', 'value': {'dark': true, 'tags': ['a', 2.5]}},
+        {'key': 'first_name', 'value': null},
+      ]);
+      expect(() => Pushizo.User.setProperty('', 'x'), throwsArgumentError);
+      expect(() => Pushizo.User.setProperty('   ', 'x'), throwsArgumentError);
+      expect(() => Pushizo.User.setProperty('k' * 65, 'x'), throwsArgumentError);
+      expect(() => Pushizo.User.setProperty('when', DateTime(2026)), throwsArgumentError);
+      expect(() => Pushizo.User.setProperty('ratio', double.nan), throwsArgumentError);
+      expect(() => Pushizo.User.setProperty('list', [1, null]), throwsArgumentError);
+      expect(() => Pushizo.User.setProperty('map', {1: 'a'}), throwsArgumentError);
+      expect(calls, hasLength(5));
+    });
+
+    test('Session.sendEvent: eventId yalnızca verildiğinde iletilir', () async {
+      await Pushizo.Session.sendEvent('purchase', properties: {'sku': 'A1'}, value: 49.9, eventId: 'order-1042');
+      await Pushizo.Session.sendEvent('viewed');
+      expect(calls[0].arguments, {'name': 'purchase', 'properties': {'sku': 'A1'}, 'value': 49.9, 'eventId': 'order-1042'});
+      expect(calls[1].arguments, {'name': 'viewed', 'properties': <String, Object?>{}, 'value': null});
+    });
+
+    test('FeatureFlags ve Inbox gözlemcileri: akış, ekleme (tekil) ve kaldırma', () async {
+      // Olay akışı ilk erişimde bir kez açılır ve tıklama dağıtıcısı yüzünden açık kalır; bu yüzden olaylar akışı hangi
+      // testin açtığından bağımsız olarak doğrudan platform mesajıyla gönderilir.
+      final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockStreamHandler(
+        const EventChannel('pushizo_flutter/events'),
+        MockStreamHandler.inline(onListen: (arguments, events) {}),
+      );
+      void emit(Map<String, Object?> event) {
+        messenger.handlePlatformMessage('pushizo_flutter/events', const StandardMethodCodec().encodeSuccessEnvelope(event), (_) {});
+      }
+
+      var flagChanges = 0;
+      var flagStream = 0;
+      final inbox = <PushizoInboxChangeEvent>[];
+      final inboxStream = <String>[];
+      void flagObserver() => flagChanges++;
+      void inboxObserver(PushizoInboxChangeEvent event) => inbox.add(event);
+      final flagSubscription = Pushizo.FeatureFlags.changes.listen((_) => flagStream++);
+      final inboxSubscription = Pushizo.Inbox.changes.listen((e) => inboxStream.add(e.type));
+      Pushizo.FeatureFlags.addObserver(flagObserver);
+      Pushizo.FeatureFlags.addObserver(flagObserver);
+      Pushizo.Inbox.addObserver(inboxObserver);
+      Pushizo.Inbox.addObserver(inboxObserver);
+      await pumpEventQueue();
+
+      emit({'type': 'featureFlags'});
+      emit({'type': 'inboxChange', 'event': 'read', 'itemId': 'i1', 'unreadCount': 2});
+      emit({'type': 'inboxChange', 'event': 'read_all', 'itemId': null, 'unreadCount': 0});
+      emit({'type': 'permission', 'permission': true});
+      await pumpEventQueue();
+      expect(flagChanges, 1, reason: 'aynı gözlemci bir kez eklenir');
+      expect(flagStream, 1);
+      expect(inbox.map((e) => '${e.type}/${e.itemId}/${e.unreadCount}').toList(), ['read/i1/2', 'read_all/null/0']);
+      expect(inbox.first.type, PushizoInboxChangeEvent.read);
+      expect(inbox.last.type, PushizoInboxChangeEvent.readAll);
+      expect(inboxStream, ['read', 'read_all']);
+
+      Pushizo.FeatureFlags.removeObserver(flagObserver);
+      Pushizo.Inbox.removeObserver(inboxObserver);
+      emit({'type': 'featureFlags'});
+      emit({'type': 'inboxChange', 'event': 'count', 'unreadCount': 5});
+      await pumpEventQueue();
+      expect(flagChanges, 1);
+      expect(inbox, hasLength(2));
+      expect(flagStream, 2);
+      expect(inboxStream, ['read', 'read_all', 'count']);
+      await flagSubscription.cancel();
+      await inboxSubscription.cancel();
+    });
+
+    test('kutu değişim olayı haritadan oluşur; eksik alanlar güvenli varsayılan alır', () {
+      final event = PushizoInboxChangeEvent.fromMap({'type': 'inboxChange', 'event': 'archived', 'itemId': 'i9', 'unreadCount': 3.0});
+      expect('${event.type}/${event.itemId}/${event.unreadCount}', 'archived/i9/3');
+      expect(event.type, PushizoInboxChangeEvent.archived);
+      final empty = PushizoInboxChangeEvent.fromMap(const {});
+      expect('${empty.type}/${empty.itemId}/${empty.unreadCount}', '/null/0');
+      expect([PushizoInboxChangeEvent.listed, PushizoInboxChangeEvent.count], ['listed', 'count']);
+    });
+
+    test('Chat.show, hide ve isPresented platforma iletilir; yerel sonuç yoksa false', () async {
+      await Pushizo.Chat.show();
+      expect(await Pushizo.Chat.hide(), isFalse);
+      expect(await Pushizo.Chat.isPresented, isFalse);
+      expect(calls.map((c) => c.method).toList(), ['chatShow', 'chatHide', 'chatIsPresented']);
+      expect(calls.map((c) => c.arguments).toList(), [null, null, null]);
+      respond((call) => switch (call.method) { 'chatHide' || 'chatIsPresented' => true, _ => null });
+      expect(await Pushizo.Chat.isPresented, isTrue);
+      expect(await Pushizo.Chat.hide(), isTrue);
+    });
+
+    test('yerel köprü Android: tur 3 yerel SDK çağrıları', () {
+      final kt = read('android/src/main/kotlin/com/pushizo/pushizo_flutter/PushizoFlutterPlugin.kt');
+      expect(kt, contains('"setProperty" -> { Pushizo.User.setProperty(call.argument<String>("key").orEmpty(), call.argument<Any?>("value")); result.success(null) }'));
+      // eventId verilmediyse eski aşırı yükleme, verildiyse eventId'li aşırı yükleme.
+      expect(kt, contains('if (eventId == null) Pushizo.Session.sendEvent(name, properties, value)\n                    else Pushizo.Session.sendEvent(name, properties, value, eventId)'));
+      // Gözlemciler: initialize'da eklenir, motor ayrılınca kaldırılır.
+      expect(kt, contains('private val featureFlagObserver = HsFeatureFlagObserver { emit(mapOf("type" to "featureFlags")) }'));
+      expect(kt, contains('emit(mapOf("type" to "inboxChange", "event" to e.type, "itemId" to e.itemId, "unreadCount" to e.unreadCount))'));
+      expect(kt, contains('Pushizo.FeatureFlags.addObserver(featureFlagObserver)\n                    Pushizo.Inbox.addObserver(inboxObserver)'));
+      expect(kt, contains('Pushizo.FeatureFlags.removeObserver(featureFlagObserver)\n        Pushizo.Inbox.removeObserver(inboxObserver)'));
+      // Hazır sohbet ekranı: Activity bağlamı tercih edilir; açık mı bilgisi Activity yaşam döngüsünden izlenir.
+      expect(kt, contains('"chatShow" -> { (activity ?: context)?.let { Pushizo.Chat.show(it) }; result.success(null) }'));
+      expect(kt, contains('"chatHide" -> result.success(Pushizo.Chat.hide())'));
+      expect(kt, contains('"chatIsPresented" -> result.success(chatActivity?.get()?.let { !it.isFinishing && !it.isDestroyed } ?: false)'));
+      expect(kt, contains('if (activity is HsChatActivity) chatActivity = WeakReference(activity)'));
+      expect(kt, contains('if (chatActivity?.get() === activity) chatActivity = null'));
+      expect(kt, contains('(binding.applicationContext as? Application)?.registerActivityLifecycleCallbacks(chatLifecycle)'));
+      expect(kt, contains('(binding.applicationContext as? Application)?.unregisterActivityLifecycleCallbacks(chatLifecycle)'));
+    });
+
+    test('yerel köprü iOS: tur 3 yerel SDK çağrıları', () {
+      final swift = read('ios/Classes/PushizoFlutterPlugin.swift');
+      // null (NSNull) değer özelliği siler.
+      expect(swift, contains(r'let value = args["value"].flatMap { $0 is NSNull ? nil : $0 }'));
+      expect(swift, contains('Pushizo.User.setProperty(args["key"] as? String ?? "", value)'));
+      expect(swift, contains('value: (args["value"] as? NSNumber)?.doubleValue, eventId: args["eventId"] as? String)'));
+      expect(swift, contains('Pushizo.FeatureFlags.addObserver { [weak self] in\n                    self?.emit(["type": "featureFlags"])'));
+      expect(swift, contains('Pushizo.Inbox.addObserver { [weak self] event in'));
+      expect(swift, contains('self?.emit(["type": "inboxChange", "event": event.type.rawValue, "itemId": event.itemId as Any, "unreadCount": event.unreadCount])'));
+      // Gözlemciler diğer dinleyicilerle birlikte yalnızca bir kez eklenir.
+      expect(swift.indexOf('Pushizo.Inbox.addObserver'), greaterThan(swift.indexOf('if !listenersRegistered {')));
+      expect(swift, contains('case "chatShow": Pushizo.Chat.show(); result(nil)'));
+      expect(swift, contains('let presented = Pushizo.Chat.isPresented\n            Pushizo.Chat.hide()\n            result(presented)'));
+      expect(swift, contains('case "chatIsPresented": result(Pushizo.Chat.isPresented)'));
     });
   });
 }

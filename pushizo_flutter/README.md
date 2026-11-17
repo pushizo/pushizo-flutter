@@ -59,7 +59,8 @@ geri çekilme + `after_seq` yoklaması) ve push ile gelen temsilci mesajları (`
 `start` sonrası login/logout ve push aboneliği değişince bağlama yerel SDK'da yenilenir, logout ziyaretçiyi sıfırlar.
 Mesajlar `seq` ile sıralanır; ağ yokken gönderilen mesaj `pending` döner ve gönderilince olayla sunucu kopyası gelir.
 Ayrıntı: [android rehberi](https://docs.pushizo.com/docs/sdk/android) / [ios rehberi](https://docs.pushizo.com/docs/sdk/ios) → "Canlı sohbet".
-Flutter web'de sohbet Web SDK widget'ıyla sunulur; `Pushizo.Chat` yöntemleri `PLATFORM_NOT_SUPPORTED` döner.
+Hazır arayüz için `Pushizo.Chat.show()` / `hide()` / `isPresented`. Flutter web'de sohbet Web SDK widget'ıyla sunulur (`Pushizo.Chat.show()`);
+ayarlar, konuşma durumu, okunmamış sayısı, yazıyor bilgisi ve ek adresi web'de de çalışır, mesajlaşma yöntemleri `PLATFORM_NOT_SUPPORTED` döner.
 
 ## Gömülü yerleşimler ve özellik bayrakları
 
@@ -105,9 +106,10 @@ await Pushizo.User.setAdsPersonalizationConsent(true);   // güncel tercih liste
 final consents = await Pushizo.User.getConsents();        // purpose, granted, source, updatedAt
 await Pushizo.Ads.setAdvertisingId(advertisingId);        // GAID / IDFA; null kaydı siler
 
-// Rozet (yalnızca iOS; Android ve web'de etkisiz)
-await Pushizo.Notifications.setBadgeCount(3);
+// Rozet: sonuç, rozetin bu cihazda gösterilip gösterilemediğidir
+final shown = await Pushizo.Notifications.setBadgeCount(3);
 await Pushizo.Notifications.clearBadge();
+final badge = await Pushizo.Notifications.badgeCount;
 
 // Konum izni durumu ve arka plan izni (bölge izleme için)
 if (await Pushizo.Location.permissionGranted && !await Pushizo.Location.backgroundPermissionGranted) {
@@ -119,7 +121,45 @@ final listening = await Pushizo.Chat.isListening;         // canlı sohbet akı�
 await Pushizo.User.registerAdm(admRegistrationId);        // yalnızca Android (Fire OS)
 ```
 
-`requestBackgroundPermission` Android'de açıklama diyaloğunu ve sistem iznini (Android 11 ve sonrasında Ayarlar ekranı), iOS'ta "her zaman" iznini ister; `requestAlwaysPermission()` aynı çağrının iOS adıdır. Android manifest'inde `ACCESS_BACKGROUND_LOCATION` yoksa `false` döner. Reklam kimliğini uygulama alır (SDK reklam kitaplığı ve ATT istemi içermez); kimlik yalnızca `ads_personalization` rızası olan kullanıcıda ve SHA-256 özetiyle kullanılır. Web'de rıza çağrıları Web SDK'ya gider; reklam kimliği, rozet, ADM ve konum izni çağrıları etkisizdir.
+`requestBackgroundPermission` Android'de açıklama diyaloğunu ve sistem iznini (Android 11 ve sonrasında Ayarlar ekranı), iOS'ta "her zaman" iznini ister; `requestAlwaysPermission()` aynı çağrının iOS adıdır. Android manifest'inde `ACCESS_BACKGROUND_LOCATION` yoksa `false` döner. Reklam kimliğini uygulama alır (SDK reklam kitaplığı ve ATT istemi içermez); kimlik yalnızca `ads_personalization` rızası olan kullanıcıda ve SHA-256 özetiyle kullanılır.
+
+Rozet iOS'ta uygulama simgesine ve bildirim uzantısıyla paylaşılan sayaca yazılır (`true`). Android'de başlatıcı rozeti için standart bir "sayıyı ayarla" API'si yoktur: yerel SDK sayıyı saklar ve sonraki bildirimlere yazar; sayı gösteren başlatıcılar bunu kullanır, tepside bildirim yokken rozet görünmez. Android 8 öncesinde, bildirimler kapalıyken ya da kanalın rozeti kapatıldıysa sonuç `false` olur (sayı yine saklanır). Web'de App Badging API kullanılır (yüklü PWA'larda görünür); tarayıcı desteklemiyorsa `false` döner. `badgeCount` Android'de saklanan sayıyı, iOS'ta uygulama simgesindeki rozeti, web'de bu oturumda ayarlanan son değeri verir.
+
+Web'de profille giriş, rıza çağrıları ve `Location.permissionGranted` Web SDK'ya gider (profil girişten önce doğrulanır). Reklam kimliği ve ADM çağrıları web'de etkisizdir; arka plan konum izni `false` döner.
+
+## Kullanıcı özelliği, gözlemciler, olay kimliği ve hazır sohbet
+
+```dart
+// Kullanıcı özelliği: metin, sayı, bool ya da bunların listesi/haritası; null özelliği siler
+await Pushizo.User.setProperty('first_name', 'Ali');
+await Pushizo.User.setProperty('first_name', null);
+
+// Bildirim kutusu gözlemcisi (akış olarak: Pushizo.Inbox.changes)
+void onInbox(PushizoInboxChangeEvent e) => updateBadge(e.unreadCount); // type: listed, read, read_all, archived, count
+Pushizo.Inbox.addObserver(onInbox);
+Pushizo.Inbox.removeObserver(onInbox);
+
+// Özellik bayrağı gözlemcisi (akış olarak: Pushizo.FeatureFlags.changes)
+void onFlags() => rebuild();
+Pushizo.FeatureFlags.addObserver(onFlags);
+Pushizo.FeatureFlags.removeObserver(onFlags);
+
+// Olay tekilleştirme kimliği: reklam pikseliyle aynı kimlik verilirse sunucu olayı tekilleşir
+await Pushizo.Session.sendEvent('purchase', value: 49.9, eventId: 'order-1042');
+
+// Hazır sohbet ekranı
+await Pushizo.Chat.show();
+final open = await Pushizo.Chat.isPresented;
+final closed = await Pushizo.Chat.hide();
+```
+
+`setProperty` anahtarı 1-64 karakter olmalıdır; kurala uymayan anahtar ya da desteklenmeyen değer platforma gitmeden `ArgumentError` fırlatır. Özellik çevrimdışıyken yerel SDK kuyruğunda bekler.
+
+Kutu gözlemcisi `read`, `read_all` ve `archived` olaylarını her işlemde, `listed` ve `count` olaylarını yalnızca okunmamış sayısı değiştiğinde alır; `itemId` yalnızca tek öğe olaylarında doludur. Bayrak gözlemcisi değerler sunucudan her başarıyla yenilendiğinde (oturum başı ve `refresh()`) çağrılır. Aynı gözlemci iki kez eklenmez; gözlemciler `Pushizo.initialize` çağrısından sonraki olayları alır.
+
+`eventId` 8-64 karakterdir (harf, rakam ve `. _ : -`); verilmezse ya da biçim geçersizse SDK kendi kimliğini üretir.
+
+`Chat.show()` Android'de yerel SDK'nın sohbet ekranını (`HsChatActivity`), iOS'ta modal sohbet ekranını, web'de Web SDK sohbet widget'ını açar; `hide()` açık bir ekranı kapattıysa `true` döner. Flutter web'de `Chat.getConfig`, `getConversation`, `unreadCount`, `refreshUnreadCount`, `setTyping` ve `attachmentUrl` da Web SDK'ya iletilir; mesajlaşma yöntemleri (`start`, `getMessages`, `sendMessage`, `sendAttachment`, `markRead`, `leaveOfflineMessage`, `startListening`, `stopListening`, `visitorId`) web'de `PLATFORM_NOT_SUPPORTED` döner, çünkü web'de mesajlaşma sohbet widget'ıyla yapılır.
 
 ## Konum
 

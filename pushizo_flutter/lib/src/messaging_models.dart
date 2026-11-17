@@ -443,6 +443,39 @@ class PushizoInboxPage {
       );
 }
 
+/// Bildirim kutusu değişim olayı ([Pushizo.Inbox.changes] / `addObserver`). [type]: [listed], [read], [readAll],
+/// [archived] veya [count]; [itemId] yalnızca tek öğe olaylarında (`read`, `archived`) doludur; [unreadCount] güncel
+/// okunmamış sayısıdır.
+class PushizoInboxChangeEvent {
+  const PushizoInboxChangeEvent({required this.type, required this.unreadCount, this.itemId});
+
+  static const String listed = 'listed';
+  static const String read = 'read';
+  static const String readAll = 'read_all';
+  static const String archived = 'archived';
+  static const String count = 'count';
+
+  final String type;
+  final String? itemId;
+  final int unreadCount;
+
+  /// Kanal olayı `{event, itemId, unreadCount}` (`event` olay türüdür; `type` kanal olay adına ayrılmıştır).
+  factory PushizoInboxChangeEvent.fromMap(Map<Object?, Object?> map) => PushizoInboxChangeEvent(
+        type: map['event'] as String? ?? '',
+        itemId: map['itemId'] as String?,
+        unreadCount: (map['unreadCount'] as num?)?.toInt() ?? 0,
+      );
+
+  @override
+  String toString() => 'PushizoInboxChangeEvent(type: $type, itemId: $itemId, unreadCount: $unreadCount)';
+}
+
+/// Kutu değişim gözlemcisi.
+typedef PushizoInboxObserver = void Function(PushizoInboxChangeEvent event);
+
+/// Özellik bayrağı gözlemcisi: değerler sunucudan başarıyla yenilendiğinde çağrılır.
+typedef PushizoFeatureFlagObserver = void Function();
+
 /// Kullanıcı tercihi (ADR-0019 §4): kategori × kanal (`null` = tüm kanallar) → opt-in. [explicit] false ise değer
 /// kategori varsayılanından türetilmiştir; [source] kaydı yazan taraf (sdk, api, preference_center…).
 class PushizoPreference {

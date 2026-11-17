@@ -3,17 +3,21 @@ package com.pushizo.pushizo_flutter
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.Application
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import com.pushizo.sdk.Pushizo
 import com.pushizo.sdk.HsCallback
+import com.pushizo.sdk.HsChatActivity
 import com.pushizo.sdk.HsChatEventAdapter
 import com.pushizo.sdk.HsChatOpenListener
 import com.pushizo.sdk.HsClickEvent
 import com.pushizo.sdk.HsConsent
+import com.pushizo.sdk.HsFeatureFlagObserver
 import com.pushizo.sdk.HsForegroundEvent
 import com.pushizo.sdk.HsInAppClickEvent
 import com.pushizo.sdk.HsInAppHandle
@@ -26,6 +30,7 @@ import com.pushizo.sdk.HsContentCardFeed
 import com.pushizo.sdk.HsDeliverySetting
 import com.pushizo.sdk.HsDeliveryStatus
 import com.pushizo.sdk.HsInboxItem
+import com.pushizo.sdk.HsInboxObserver
 import com.pushizo.sdk.HsInboxPage
 import com.pushizo.sdk.HsLog
 import com.pushizo.sdk.HsMessageCategory
@@ -43,6 +48,7 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.PluginRegistry
 import org.json.JSONObject
+import java.lang.ref.WeakReference
 import java.util.UUID
 
 /** Flutter → Android SDK köprüsü (MethodChannel + EventChannel). */
@@ -112,6 +118,36 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
     /** Yerel SDK izin gözlemcisi → Dart `permissionStream` / `addPermissionObserver`. */
     private val permissionObserver: (Boolean) -> Unit = { granted -> emit(mapOf("type" to "permission", "permission" to granted)) }
 
+    /** Yerel SDK bayrak gözlemcisi → Dart `Pushizo.FeatureFlags.changes` / `addObserver`. */
+    private val featureFlagObserver = HsFeatureFlagObserver { emit(mapOf("type" to "featureFlags")) }
+
+    /**
+     * Yerel SDK kutu gözlemcisi → Dart `Pushizo.Inbox.changes` / `addObserver`. Olay türü (`listed`, `read`, `read_all`,
+     * `archived`, `count`) `event` alanında taşınır; `type` kanal olay adına ayrılmıştır.
+     */
+    private val inboxObserver = HsInboxObserver { e ->
+        emit(mapOf("type" to "inboxChange", "event" to e.type, "itemId" to e.itemId, "unreadCount" to e.unreadCount))
+    }
+
+    /**
+     * Hazır sohbet ekranı (`HsChatActivity`) açık mı: yerel SDK bunu sunmadığından Activity yaşam döngüsünden izlenir
+     * (Dart `Pushizo.Chat.isPresented`). Yalnızca ana iş parçacığında erişilir.
+     */
+    private var chatActivity: WeakReference<Activity>? = null
+    private val chatLifecycle = object : Application.ActivityLifecycleCallbacks {
+        override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
+            if (activity is HsChatActivity) chatActivity = WeakReference(activity)
+        }
+        override fun onActivityDestroyed(activity: Activity) {
+            if (chatActivity?.get() === activity) chatActivity = null
+        }
+        override fun onActivityStarted(activity: Activity) = Unit
+        override fun onActivityResumed(activity: Activity) = Unit
+        override fun onActivityPaused(activity: Activity) = Unit
+        override fun onActivityStopped(activity: Activity) = Unit
+        override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+    }
+
     private val inAppClickListener: (HsInAppClickEvent) -> Unit = { e ->
         emit(mapOf("type" to "inAppClick", "messageId" to e.messageId, "actionId" to e.actionId, "url" to e.url))
     }
@@ -152,6 +188,7 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
         channel.setMethodCallHandler(this)
         events = EventChannel(binding.binaryMessenger, "pushizo_flutter/events")
         events.setStreamHandler(this)
+        (binding.applicationContext as? Application)?.registerActivityLifecycleCallbacks(chatLifecycle)
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -166,6 +203,10 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
         Pushizo.InAppMessages.setRenderer(null)
         Pushizo.Chat.removeListener(chatListener)
         Pushizo.Chat.removeOpenListener(chatOpenListener)
+        Pushizo.FeatureFlags.removeObserver(featureFlagObserver)
+        Pushizo.Inbox.removeObserver(inboxObserver)
+        (binding.applicationContext as? Application)?.unregisterActivityLifecycleCallbacks(chatLifecycle)
+        chatActivity = null
         inAppHandles.values.toList().forEach { it.closed() }
         inAppHandles.clear()
         foregroundEvents.clear()
@@ -197,6 +238,8 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
                     Pushizo.InAppMessages.setRenderer(inAppRenderer)
                     Pushizo.Chat.addListener(chatListener)
                     Pushizo.Chat.addOpenListener(chatOpenListener)
+                    Pushizo.FeatureFlags.addObserver(featureFlagObserver)
+                    Pushizo.Inbox.addObserver(inboxObserver)
                     result.success(null)
                 }
                 "setConsentGiven" -> { Pushizo.setConsentGiven(call.argument<Boolean>("given") ?: false); result.success(null) }
@@ -221,6 +264,8 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
                 // Dart `PushizoForegroundEvent.display()`: ertelenen bildirim şimdi gösterilir (tek sefer; yerel SDK yineleneni yok sayar).
                 "displayForegroundNotification" -> { call.argument<String>("eventId")?.let { foregroundEvents.remove(it) }?.display(); result.success(null) }
                 "setLanguage" -> { Pushizo.User.setLanguage(call.argument<String>("code")!!); result.success(null) }
+                // Kullanıcı özelliği: null değer özelliği siler (boş anahtar → IllegalArgumentException → INVALID_ARGUMENT).
+                "setProperty" -> { Pushizo.User.setProperty(call.argument<String>("key").orEmpty(), call.argument<Any?>("value")); result.success(null) }
                 "getExternalId" -> result.success(Pushizo.User.externalId)
                 "getEmails" -> result.success(Pushizo.User.emails)
                 "getSmsNumbers" -> result.success(Pushizo.User.smsNumbers)
@@ -243,13 +288,20 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
                 }
                 // Bildirim tepsisi
                 "clearAll" -> { Pushizo.Notifications.clearAll(); result.success(null) }
-                // Rozet yalnızca iOS'ta ayarlanır; Android'de başlatıcı rozeti görünen bildirimlerden hesaplanır (etkisiz).
-                "setBadgeCount" -> result.success(null)
+                // Rozet: yerel SDK sayıyı saklar ve sonraki bildirimlere yazar; sonuç rozetin bu cihazda gösterilip gösterilemediğidir.
+                "setBadgeCount" -> result.success(Pushizo.Notifications.setBadgeCount(call.argument<Number>("count")?.toInt() ?: 0))
+                "getBadgeCount" -> result.success(Pushizo.Notifications.badgeCount)
                 // Android tepsi kimliği; yalnızca iOS kimliği (`identifier`) verildiyse Android'de etkisizdir.
                 "removeNotification" -> { call.argument<Int>("id")?.let { Pushizo.Notifications.removeNotification(it) }; result.success(null) }
                 "removeGroupedNotifications" -> { Pushizo.Notifications.removeGroupedNotifications(call.argument<String>("group")!!); result.success(null) }
                 "sendEvent" -> {
-                    Pushizo.Session.sendEvent(call.argument<String>("name")!!, call.argument<Map<String, Any?>>("properties") ?: emptyMap(), call.argument<Double>("value"))
+                    val name = call.argument<String>("name")!!
+                    val properties = call.argument<Map<String, Any?>>("properties") ?: emptyMap()
+                    val value = call.argument<Number>("value")?.toDouble()
+                    // Tekilleştirme kimliği (ADR-0038): geçersiz biçimde yerel SDK kendi kimliğini üretir.
+                    val eventId = call.argument<String>("eventId")
+                    if (eventId == null) Pushizo.Session.sendEvent(name, properties, value)
+                    else Pushizo.Session.sendEvent(name, properties, value, eventId)
                     result.success(null)
                 }
                 "setLogLevel" -> { Pushizo.Debug.setLogLevel(logLevel(call.argument<String>("level"))); result.success(null) }
@@ -353,6 +405,10 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
                 "chatAttachmentUrl" -> result.success(Pushizo.Chat.attachmentUrl(call.argument<String>("attachmentId").orEmpty(), call.argument<Boolean>("download") ?: false))
                 "chatGetVisitorId" -> result.success(Pushizo.Chat.visitorId)
                 "chatIsListening" -> result.success(Pushizo.Chat.isListening)
+                // Hazır sohbet ekranı (HsChatActivity): Activity bağlamı tercih edilir; yoksa uygulama bağlamıyla yeni görevde açılır.
+                "chatShow" -> { (activity ?: context)?.let { Pushizo.Chat.show(it) }; result.success(null) }
+                "chatHide" -> result.success(Pushizo.Chat.hide())
+                "chatIsPresented" -> result.success(chatActivity?.get()?.let { !it.isFinishing && !it.isDestroyed } ?: false)
                 // Live Activities yalnızca iOS'ta vardır (ADR-0024); Android'de sessizce başarılı dönülmez.
                 "setupDefaultLiveActivity", "startDefaultLiveActivity" ->
                     result.error(LIVE_ACTIVITY_UNSUPPORTED_CODE, LIVE_ACTIVITY_UNSUPPORTED_MESSAGE, null)

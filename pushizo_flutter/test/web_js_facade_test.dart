@@ -22,8 +22,8 @@ const _fakeSdk = r'''
     calls,
     inited: false,
     init(options) { calls.push(['init', options]); sdk.inited = true; return Promise.resolve(); },
-    login(externalId, proof) {
-      calls.push(['login', externalId, arg(proof)]);
+    login(externalId, proof, profile) {
+      calls.push(profile === undefined ? ['login', externalId, arg(proof)] : ['login', externalId, arg(proof), profile]);
       if (externalId === 'forbidden') {
         const error = new Error('Bu işlem için yetki yok');
         error.name = 'ApiError';
@@ -36,6 +36,7 @@ const _fakeSdk = r'''
       addEmail(email) { throw new ContactValidationError(); },
       getTags() { return { plan: 'pro', n: 3 }; },
       setAdsPersonalizationConsent(granted) { calls.push(['setAdsPersonalizationConsent', granted]); },
+      setProperty(key, value) { calls.push(['setProperty', key, value === null ? 'null' : arg(value)]); },
       get externalId() { return 'u1'; },
       id: null,
       pushSubscription: {
@@ -49,14 +50,30 @@ const _fakeSdk = r'''
       addClickListener(cb) { sdk.click = cb; },
       addForegroundLifecycleListener(cb) { sdk.foreground = cb; },
       addPermissionObserver(cb) { sdk.permission = cb; },
+      setBadgeCount(count) { calls.push(['setBadgeCount', count]); return Promise.resolve(count < 100); },
     },
-    Session: { sendEvent(name, properties, value) { calls.push(['sendEvent', name, properties, arg(value)]); } },
+    Session: {
+      sendEvent(name, properties, value, options) {
+        calls.push(options === undefined ? ['sendEvent', name, properties, arg(value)] : ['sendEvent', name, properties, arg(value), options]);
+      },
+    },
     InAppMessages: {
       paused: false,
       addClickListener(cb) { sdk.inAppClick = cb; },
       addLifecycleListener(listener) { sdk.lifecycle = listener; },
     },
-    Inbox: { unreadCount() { return Promise.resolve(7); } },
+    Inbox: { unreadCount() { return Promise.resolve(7); }, addObserver(cb) { sdk.inbox = cb; } },
+    Chat: {
+      unread: 2,
+      get unreadCount() { return this.unread; },
+      getUnreadCount() { this.unread = 5; return Promise.resolve(5); },
+      getConfig(refresh) { calls.push(['chatGetConfig', arg(refresh)]); return Promise.resolve({ enabled: true, attachments: { enabled: true, max_bytes: 1024, types: ['image/png'] } }); },
+      getConversation() { return Promise.resolve(sdk.conversation === undefined ? null : sdk.conversation); },
+      setTyping(typing) { calls.push(['chatSetTyping', typing]); },
+      attachmentUrl(id, download) { return 'https://api.pushizo.com/chat/attachments/' + id + (download ? '?download=true' : ''); },
+      show(options) { calls.push(['chatShow', arg(options)]); return Promise.resolve(); },
+      hide() { calls.push(['chatHide']); },
+    },
     Location: {
       shared: false,
       setShared(shared) {
@@ -64,6 +81,8 @@ const _fakeSdk = r'''
         this.shared = shared;
       },
       get isShared() { return this.shared; },
+      granted: false,
+      get permissionGranted() { return this.granted; },
       requestPermission(rationale) { calls.push(['requestPermission', arg(rationale)]); return Promise.resolve(true); },
     },
     Placements: {
@@ -88,7 +107,9 @@ const _fakeSdk = r'''
         calls.push(['getValue', key, arg(defaultValue)]);
         return { n: 3, obj: { max: 3, tags: ['a', 2.5] }, s: 'Yeni', f: false }[key];
       },
+      removed: 0,
       addObserver(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); },
+      removeObserver(listener) { this.removed += 1; this.listeners.delete(listener); },
     },
   };
   return sdk;
@@ -112,7 +133,8 @@ void main() {
     final empty = JsWebSdkFacade(JSObject());
     expect(empty.isLoaded, isFalse);
     expect(facade.isLoaded, isTrue);
-    await expectLater(empty.logout(), throwsA(isA<WebSdkError>().having((e) => e.code, 'code', 'NOT_READY')));
+    // `window.Pushizo` erişimi senkron hata verir (köprü çağrıdan önce `isLoaded` denetler).
+    expect(() => empty.logout(), throwsA(isA<WebSdkError>().having((e) => e.code, 'code', 'NOT_READY')));
   });
 
   test('init ve login argümanları; kanıt yoksa ikinci argüman verilmez', () async {
@@ -185,6 +207,14 @@ void main() {
     flags.setProperty('refreshOk'.toJS, false.toJS);
     expect(await facade.featureFlagsRefresh(), isFalse);
     expect(flags.getProperty<JSObject>('listeners'.toJS).getProperty<JSNumber>('size'.toJS).toDartInt, 0, reason: 'gözlemci kaldırılır');
+    expect(flags.getProperty<JSNumber>('removed'.toJS).toDartInt, 2, reason: 'FeatureFlags.removeObserver kullanılır');
+    // Eski Web SDK (removeObserver yok): addObserver'ın döndürdüğü işlevle kaldırılır.
+    flags.setProperty('removeObserver'.toJS, null);
+    flags.setProperty('refreshOk'.toJS, true.toJS);
+    expect(await facade.featureFlagsRefresh(), isTrue);
+    expect(flags.getProperty<JSObject>('listeners'.toJS).getProperty<JSNumber>('size'.toJS).toDartInt, 0);
+    flags.setProperty('refreshOk'.toJS, false.toJS);
+    expect(await facade.featureFlagsRefresh(), isFalse);
     expect(await facade.featureFlagEnabled('on', false), isTrue);
     expect(await facade.featureFlagEnabled('off', true), isFalse);
     expect(await facade.featureFlagValueJson('n'), '{"value":3}');
@@ -192,7 +222,9 @@ void main() {
     expect(await facade.featureFlagValueJson('s'), '{"value":"Yeni"}');
     expect(await facade.featureFlagValueJson('f'), '{"value":false}');
     expect(await facade.featureFlagValueJson('missing'), isNull);
-    expect(calls().sublist(0, 4), [
+    expect(calls().sublist(0, 6), [
+      ['flagsRefresh'],
+      ['flagsRefresh'],
       ['flagsRefresh'],
       ['flagsRefresh'],
       ['isEnabled', 'on', false],
@@ -243,6 +275,91 @@ void main() {
     expect(permissions, [true]);
     expect(lifecycle, ['didDisplay:m1']);
     expect(event.getProperty<JSBoolean>('prevented'.toJS).toDart, isTrue);
+  });
+
+  test('profille login: profil üçüncü argümandır; kanıt yoksa boş nesne gider', () async {
+    await facade.login('u1', profile: {'email': 'ali@pushizo.com', 'tags': {'plan': 'pro'}});
+    await facade.login('u2', identityHash: 'h', jwt: 'h.p.s', profile: {'sms': '+905321234567'});
+    await facade.login('u3', profile: const {});
+    expect(calls(), [
+      ['login', 'u1', <Object?, Object?>{}, {'email': 'ali@pushizo.com', 'tags': {'plan': 'pro'}}],
+      ['login', 'u2', {'identityHash': 'h', 'jwt': 'h.p.s'}, {'sms': '+905321234567'}],
+      ['login', 'u3', 'undefined'],
+    ]);
+  });
+
+  test('setProperty: değer türüyle gider; null JavaScript null olur', () async {
+    await facade.setProperty('plan', 'pro');
+    await facade.setProperty('level', 7);
+    await facade.setProperty('prefs', {'dark': true, 'tags': ['a', 2.5]});
+    await facade.setProperty('plan', null);
+    expect(calls(), [
+      ['setProperty', 'plan', 'pro'],
+      ['setProperty', 'level', 7],
+      ['setProperty', 'prefs', {'dark': true, 'tags': ['a', 2.5]}],
+      ['setProperty', 'plan', 'null'],
+    ]);
+  });
+
+  test('rozet ve konum izni durumu Web SDK değerleridir', () async {
+    expect(await facade.setBadgeCount(3), isTrue);
+    expect(await facade.setBadgeCount(100), isFalse);
+    expect(calls(), [
+      ['setBadgeCount', 3],
+      ['setBadgeCount', 100],
+    ]);
+    expect(await facade.locationPermissionGranted(), isFalse);
+    fake.getProperty<JSObject>('Location'.toJS).setProperty('granted'.toJS, true.toJS);
+    expect(await facade.locationPermissionGranted(), isTrue);
+  });
+
+  test('sendEvent eventId dördüncü argümandadır; değer yoksa yeri undefined ile korunur', () async {
+    await facade.sendEvent('purchase', {'sku': 'A1'}, 49.9, eventId: 'order-1042');
+    await facade.sendEvent('viewed', const {}, null, eventId: 'view-0001');
+    await facade.sendEvent('plain', const {}, 2);
+    expect(calls(), [
+      ['sendEvent', 'purchase', {'sku': 'A1'}, 49.9, {'eventId': 'order-1042'}],
+      ['sendEvent', 'viewed', <Object?, Object?>{}, 'undefined', {'eventId': 'view-0001'}],
+      ['sendEvent', 'plain', <Object?, Object?>{}, 2],
+    ]);
+  });
+
+  test('bayrak ve kutu gözlemcileri; eski Web SDK\'da kutu gözlemcisi yoksa hata vermez', () async {
+    var flagChanges = 0;
+    final inbox = <Map<Object?, Object?>>[];
+    facade.addFeatureFlagObserver(() => flagChanges++);
+    facade.addInboxObserver(inbox.add);
+    await facade.featureFlagsRefresh();
+    fake.callMethod<JSAny?>('inbox'.toJS, {'type': 'read', 'itemId': 'i1', 'unreadCount': 2}.jsify());
+    expect(flagChanges, 1);
+    expect(inbox.single, {'type': 'read', 'itemId': 'i1', 'unreadCount': 2});
+    fake.getProperty<JSObject>('Inbox'.toJS).setProperty('addObserver'.toJS, null);
+    facade.addInboxObserver(inbox.add);
+  });
+
+  test('sohbet: ayarlar, konuşma, okunmamış sayısı, yazıyor, ek adresi ve hazır widget', () async {
+    final config = await facade.chatConfig(true);
+    expect(config['enabled'], isTrue);
+    expect(config['attachments'], {'enabled': true, 'max_bytes': 1024, 'types': ['image/png']});
+    expect(await facade.chatConversation(), {'conversation': null, 'unread_count': 2});
+    fake.setProperty('conversation'.toJS, {'id': 'cnv_1', 'status': 'open', 'last_seq': 9}.jsify());
+    expect(await facade.chatConversation(), {
+      'conversation': {'id': 'cnv_1', 'status': 'open', 'last_seq': 9},
+      'unread_count': 2,
+    });
+    expect(await facade.chatUnreadCount(), 2);
+    expect(await facade.chatRefreshUnreadCount(), 5);
+    expect(await facade.chatUnreadCount(), 5);
+    await facade.chatSetTyping(true);
+    expect(await facade.chatAttachmentUrl('att_1', true), 'https://api.pushizo.com/chat/attachments/att_1?download=true');
+    await facade.chatShow();
+    await facade.chatHide();
+    expect(calls(), [
+      ['chatGetConfig', true],
+      ['chatSetTyping', true],
+      ['chatShow', {'open': true}],
+      ['chatHide'],
+    ]);
   });
 
   test('köprü + JS cephesi: Web SDK hatası PlatformException koduna çevrilir', () async {

@@ -45,12 +45,25 @@ class JsWebSdkFacade implements WebSdkFacade {
   }
 
   /// [target] üzerindeki [method] yöntemini [args] ile çağırır; dönen Promise beklenir, ret [WebSdkError] olur.
-  static Future<JSAny?> _call(JSObject target, String method, [List<JSAny?> args = const []]) async {
+  /// [undefinedAt] içindeki argüman sıraları JavaScript `undefined` olarak gider (aradaki isteğe bağlı argümanı atlamak
+  /// için).
+  static Future<JSAny?> _call(JSObject target, String method, [List<JSAny?> args = const [], Set<int> undefinedAt = const {}]) async {
     final fn = target.getProperty<JSAny?>(method.toJS);
     if (fn == null || !fn.isA<JSFunction>()) {
       throw WebSdkError('Web SDK yöntemi bulunamadı: $method (PushizoSDK.js sürümü eski olabilir)');
     }
-    final bound = (fn as JSFunction).callMethodVarArgs<JSFunction>('bind'.toJS, [target, ...args]);
+    final JSFunction bound;
+    if (undefinedAt.isEmpty) {
+      bound = (fn as JSFunction).callMethodVarArgs<JSFunction>('bind'.toJS, [target, ...args]);
+    } else {
+      // `undefined` Dart'tan taşınamaz (dart2wasm'da `null` olur): argümanlar boşluklu bir diziye yazılır ve
+      // `bind.apply(fn, dizi)` ile bağlanır; dizi boşlukları `undefined` okunur.
+      final argv = JSArray<JSAny?>.withLength(args.length + 1)..setProperty(0.toJS, target);
+      for (var i = 0; i < args.length; i++) {
+        if (!undefinedAt.contains(i)) argv.setProperty((i + 1).toJS, args[i]);
+      }
+      bound = (fn as JSFunction).getProperty<JSFunction>('bind'.toJS).callMethod<JSFunction>('apply'.toJS, fn, argv);
+    }
     final promise = globalContext.getProperty<JSObject>('Promise'.toJS);
     WebSdkError? failure;
     final settled = promise
@@ -100,10 +113,16 @@ class JsWebSdkFacade implements WebSdkFacade {
   Future<void> setConsentGiven(bool given) => _call(_sdk, 'setConsentGiven', [given.toJS]);
 
   @override
-  Future<void> login(String externalId, {String? identityHash, String? jwt}) {
-    // Kanıt yoksa ikinci argüman hiç verilmez (Web SDK `typeof proof === 'object'` denetimi null'ı kabul etmez).
+  Future<void> login(String externalId, {String? identityHash, String? jwt, Map<String, Object?>? profile}) {
+    // Kanıt yoksa ikinci argüman hiç verilmez (Web SDK `typeof proof === 'object'` denetimi null'ı kabul etmez);
+    // profil varsa kanıt yerine boş nesne gider (üçüncü argümanın yeri korunur).
     final proof = <String, Object?>{'identityHash': ?identityHash, 'jwt': ?jwt};
-    return _call(_sdk, 'login', [externalId.toJS, if (proof.isNotEmpty) proof.jsify()]);
+    final hasProfile = profile != null && profile.isNotEmpty;
+    return _call(_sdk, 'login', [
+      externalId.toJS,
+      if (proof.isNotEmpty || hasProfile) proof.jsify(),
+      if (hasProfile) profile.jsify(),
+    ]);
   }
 
   @override
@@ -143,6 +162,9 @@ class JsWebSdkFacade implements WebSdkFacade {
   Future<void> setLanguage(String code) => _call(_ns('User'), 'setLanguage', [code.toJS]);
 
   @override
+  Future<void> setProperty(String key, Object? value) => _call(_ns('User'), 'setProperty', [key.toJS, value.jsify()]);
+
+  @override
   Future<String?> externalId() async => _string(_get(_ns('User'), 'externalId'));
 
   @override
@@ -179,8 +201,22 @@ class JsWebSdkFacade implements WebSdkFacade {
   Future<void> clearAllNotifications() => _call(_ns('Notifications'), 'clearAll');
 
   @override
-  Future<void> sendEvent(String name, Map<String, Object?> properties, double? value) =>
-      _call(_ns('Session'), 'sendEvent', [name.toJS, properties.jsify(), if (value != null) value.toJS]);
+  Future<bool> setBadgeCount(int count) async => _bool(await _call(_ns('Notifications'), 'setBadgeCount', [count.toJS]));
+
+  @override
+  Future<void> sendEvent(String name, Map<String, Object?> properties, double? value, {String? eventId}) =>
+      _call(
+        _ns('Session'),
+        'sendEvent',
+        [
+          name.toJS,
+          properties.jsify(),
+          // `eventId` dördüncü argümandadır; değer yoksa yeri `undefined` ile korunur.
+          if (value != null) value.toJS else if (eventId != null) null,
+          if (eventId != null) {'eventId': eventId}.jsify(),
+        ],
+        {if (value == null && eventId != null) 2},
+      );
 
   @override
   Future<void> setLogLevel(String level) => _call(_ns('Debug'), 'setLogLevel', [level.toJS]);
@@ -247,6 +283,42 @@ class JsWebSdkFacade implements WebSdkFacade {
   Future<bool> requestLocationPermission(String? rationale) async =>
       _bool(await _call(_ns('Location'), 'requestPermission', [if (rationale != null) rationale.toJS]));
 
+  @override
+  Future<bool> locationPermissionGranted() async => _bool(_get(_ns('Location'), 'permissionGranted'));
+
+  static num _num(JSAny? value) => value != null && value.isA<JSNumber>() ? (value as JSNumber).toDartDouble : 0;
+
+  @override
+  Future<Map<Object?, Object?>> chatConfig(bool refresh) async => _map(await _call(_ns('Chat'), 'getConfig', [refresh.toJS]));
+
+  @override
+  Future<Map<Object?, Object?>> chatConversation() async {
+    final conversation = await _call(_ns('Chat'), 'getConversation');
+    return {
+      'conversation': conversation != null && conversation.isA<JSObject>() ? _map(conversation) : null,
+      'unread_count': _num(_get(_ns('Chat'), 'unreadCount')),
+    };
+  }
+
+  @override
+  Future<num> chatUnreadCount() async => _num(_get(_ns('Chat'), 'unreadCount'));
+
+  @override
+  Future<num> chatRefreshUnreadCount() async => _num(await _call(_ns('Chat'), 'getUnreadCount'));
+
+  @override
+  Future<void> chatSetTyping(bool typing) => _call(_ns('Chat'), 'setTyping', [typing.toJS]);
+
+  @override
+  Future<String> chatAttachmentUrl(String attachmentId, bool download) async =>
+      _string(await _call(_ns('Chat'), 'attachmentUrl', [attachmentId.toJS, download.toJS])) ?? '';
+
+  @override
+  Future<void> chatShow() => _call(_ns('Chat'), 'show', [{'open': true}.jsify()]);
+
+  @override
+  Future<void> chatHide() => _call(_ns('Chat'), 'hide');
+
   /// `JSON.stringify(value)`; Dart'a dönüşte sayı/nesne türleri sunucu JSON'u ile aynı kalır.
   static String _stringify(JSAny? value) =>
       globalContext.getProperty<JSObject>('JSON'.toJS).callMethod<JSString>('stringify'.toJS, value).toDart;
@@ -268,13 +340,20 @@ class JsWebSdkFacade implements WebSdkFacade {
   Future<bool> featureFlagsRefresh() async {
     // Web SDK `refresh` sonuç döndürmez; gözlemci yalnızca değerler başarıyla yazıldığında tetiklenir.
     var refreshed = false;
-    final unsubscribe = _ns('FeatureFlags').callMethod<JSFunction>('addObserver'.toJS, (() {
+    final flags = _ns('FeatureFlags');
+    final observer = (() {
       refreshed = true;
-    }).toJS);
+    }).toJS;
+    final unsubscribe = flags.callMethod<JSAny?>('addObserver'.toJS, observer);
     try {
-      await _call(_ns('FeatureFlags'), 'refresh');
+      await _call(flags, 'refresh');
     } finally {
-      unsubscribe.callAsFunction();
+      // Gözlemci `removeObserver` ile kaldırılır; eski Web SDK sürümlerinde `addObserver`'ın döndürdüğü işlevle.
+      if (_hasMethod(flags, 'removeObserver')) {
+        flags.callMethod<JSAny?>('removeObserver'.toJS, observer);
+      } else if (unsubscribe != null && unsubscribe.isA<JSFunction>()) {
+        (unsubscribe as JSFunction).callAsFunction();
+      }
     }
     return refreshed;
   }
@@ -335,6 +414,24 @@ class JsWebSdkFacade implements WebSdkFacade {
       );
     }
     _ns('InAppMessages').callMethod<JSAny?>('addLifecycleListener'.toJS, callbacks);
+  }
+
+  static bool _hasMethod(JSObject target, String name) {
+    final fn = target.getProperty<JSAny?>(name.toJS);
+    return fn != null && fn.isA<JSFunction>();
+  }
+
+  @override
+  void addFeatureFlagObserver(void Function() observer) {
+    _ns('FeatureFlags').callMethod<JSAny?>('addObserver'.toJS, (() => observer()).toJS);
+  }
+
+  @override
+  void addInboxObserver(void Function(Map<Object?, Object?> event) observer) {
+    // Eski PushizoSDK.js sürümlerinde kutu gözlemcisi yoktur; başlatma bu yüzden başarısız olmamalıdır.
+    final inbox = _ns('Inbox');
+    if (!_hasMethod(inbox, 'addObserver')) return;
+    inbox.callMethod<JSAny?>('addObserver'.toJS, ((JSAny? e) => observer(_map(e))).toJS);
   }
 }
 

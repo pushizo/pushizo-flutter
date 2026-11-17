@@ -26,7 +26,12 @@
 /// await Pushizo.login('user_42', profile: const PushizoUserProfile(email: 'ali@pushizo.com', tags: {'plan': 'pro'}));
 /// await Pushizo.User.setAdsPersonalizationConsent(true);
 /// await Pushizo.Ads.setAdvertisingId(advertisingId); // GAID / IDFA; null kaydı siler
-/// await Pushizo.Notifications.setBadgeCount(3); // yalnızca iOS
+/// await Pushizo.Notifications.setBadgeCount(3);
+/// await Pushizo.User.setProperty('first_name', 'Ali'); // null özelliği siler
+/// Pushizo.Inbox.addObserver((e) => print('okunmamış: ${e.unreadCount}'));
+/// Pushizo.FeatureFlags.addObserver(() => print('bayraklar yenilendi'));
+/// await Pushizo.Session.sendEvent('purchase', value: 49.9, eventId: 'order-1042'); // pikselle tekilleştirme
+/// await Pushizo.Chat.show(); // hazır sohbet ekranı
 /// ```
 ///
 /// Flutter web'de çağrılar sayfaya yüklenen Web SDK'ya (`window.Pushizo`) iletilir; web'de karşılığı olmayan
@@ -121,6 +126,10 @@ class Pushizo {
   static GlobalKey<NavigatorState>? _navigatorKey;
 
   static bool _handlerInstalled = false;
+
+  /// [_FeatureFlags.addObserver] / [_Inbox.addObserver] ile eklenen gözlemcilerin abonelikleri.
+  static final Map<PushizoFeatureFlagObserver, StreamSubscription<void>> _featureFlagObservers = {};
+  static final Map<PushizoInboxObserver, StreamSubscription<PushizoInboxChangeEvent>> _inboxObservers = {};
 
   /// [_Notifications.addPermissionObserver] ile eklenen gözlemciler ve olay akışı aboneliği (ilk gözlemcide açılır).
   static final List<PushizoPermissionObserver> _permissionObservers = [];
@@ -245,6 +254,26 @@ class _User {
   }
 
   Future<void> setLanguage(String code) => Pushizo._channel.invokeMethod<void>('setLanguage', {'code': code});
+
+  /// Kullanıcı özelliği yazar (ör. `setProperty('first_name', 'Ali')`); `null` özelliği siler. Değer metin, sonlu sayı,
+  /// `bool` ya da bunların listesi/haritası (anahtarları metin) olabilir; çevrimdışıyken yerel SDK kuyruğunda bekler.
+  /// Anahtar 1-64 karakter olmalıdır. Kurala uymayan girdi platforma gitmeden [ArgumentError] fırlatır.
+  Future<void> setProperty(String key, Object? value) {
+    final name = key.trim();
+    if (name.isEmpty || name.length > 64) throw ArgumentError.value(key, 'key', 'özellik anahtarı 1-64 karakter olmalı');
+    if (value != null && !_isPropertyValue(value)) {
+      throw ArgumentError.value(value, 'value', 'metin, sonlu sayı, bool ya da bunların listesi/haritası olmalı');
+    }
+    return Pushizo._channel.invokeMethod<void>('setProperty', {'key': name, 'value': value});
+  }
+
+  static bool _isPropertyValue(Object? value) => switch (value) {
+        String() || bool() => true,
+        num() => value.isFinite,
+        List() => value.every(_isPropertyValue),
+        Map() => value.entries.every((e) => e.key is String && _isPropertyValue(e.value)),
+        _ => false,
+      };
 
   /// Kullanıcıya alias ekler (ör. `addAlias('crm_id', '42')`). Etiket: küçük harf, rakam, `_`.
   Future<void> addAlias(String label, String id) => addAliases({label: id});
@@ -379,15 +408,24 @@ class _Notifications {
   /// Tepsideki/bildirim merkezindeki tüm Pushizo bildirimlerini kaldırır ve rozeti sıfırlar.
   Future<void> clearAll() => Pushizo._channel.invokeMethod<void>('clearAll');
 
-  /// Uygulama rozetini ayarlar ve bildirim uzantısıyla paylaşılan sayacı eşitler. Yalnızca iOS: Android'de rozet görünen
-  /// bildirimlerden hesaplandığından ve web'de karşılığı olmadığından çağrı etkisizdir. Negatif değerde [ArgumentError].
-  Future<void> setBadgeCount(int count) {
+  /// Uygulama rozetini ayarlar; sonuç rozetin bu cihazda gösterilip gösterilemediğidir. Negatif değerde [ArgumentError].
+  ///
+  /// - iOS: uygulama simgesi rozeti ve bildirim uzantısıyla paylaşılan sayaç ayarlanır; `true`.
+  /// - Android: başlatıcı rozeti için standart bir "sayıyı ayarla" API'si yoktur. Yerel SDK sayıyı saklar ve sonraki
+  ///   bildirimlere yazar (sayı gösteren başlatıcılar bunu kullanır; tepside bildirim yokken rozet görünmez). Android 8
+  ///   öncesinde, bildirimler kapalıyken ya da kanalın rozeti kapatıldıysa `false` (sayı yine saklanır).
+  /// - Web: App Badging API (yüklü PWA'larda görünür); tarayıcı desteklemiyorsa ya da Web SDK yüklenmediyse `false`.
+  Future<bool> setBadgeCount(int count) async {
     if (count < 0) throw ArgumentError.value(count, 'count', 'Rozet sayısı negatif olamaz');
-    return Pushizo._channel.invokeMethod<void>('setBadgeCount', {'count': count});
+    return (await Pushizo._channel.invokeMethod<bool>('setBadgeCount', {'count': count})) ?? false;
   }
 
-  /// Rozeti sıfırlar (yalnızca iOS; diğer platformlarda etkisiz).
-  Future<void> clearBadge() => setBadgeCount(0);
+  /// Rozeti sıfırlar ([setBadgeCount] `0`); tepsideki bildirimleri de kaldırmak için [clearAll].
+  Future<bool> clearBadge() => setBadgeCount(0);
+
+  /// Geçerli rozet sayısı: Android'de [setBadgeCount] ile saklanan son değer, iOS'ta uygulama simgesindeki rozet,
+  /// web'de bu oturumda başarıyla ayarlanan son değer (tarayıcı rozeti okutmaz).
+  Future<int> get badgeCount async => (await Pushizo._channel.invokeMethod<int>('getBadgeCount')) ?? 0;
 
   /// Yalnızca Android: tek bir bildirimi [PushizoNotification.androidNotificationId] ile kaldırır (iOS'ta etkisiz;
   /// iOS için [removeNotificationByIdentifier]).
@@ -489,9 +527,25 @@ class _InAppMessages {
 
 /// Canlı sohbet (ADR-0040; Android ve iOS). Ziyaretçi kimliği, çevrimdışı kuyruk, canlı akış (SSE + yoklama yedeği) ve
 /// push ile gelen mesajlar yerel SDK'dadır; login/logout ve push aboneliği değişince bağlama yerel SDK'da yenilenir.
-/// Flutter web'de sohbet Web SDK widget'ıyla sunulur; buradaki yöntemler `PLATFORM_NOT_SUPPORTED` döner.
+/// Hazır arayüz için [show] / [hide]; kendi arayüzünüz için aşağıdaki veri yöntemleri.
+///
+/// Flutter web'de [show], [hide], [isPresented], [getConfig], [getConversation], [setTyping], [attachmentUrl],
+/// [unreadCount] ve [refreshUnreadCount] Web SDK'ya iletilir; mesajlaşma yöntemleri ([start], [getMessages],
+/// [sendMessage], [sendAttachment], [markRead], [leaveOfflineMessage], [startListening], [stopListening], [visitorId])
+/// `PLATFORM_NOT_SUPPORTED` döner: web'de mesajlaşma Web SDK sohbet widget'ıyla ([show]) yapılır.
 class _Chat {
   const _Chat();
+
+  /// Hazır sohbet ekranını açar: Android'de yerel SDK'nın sohbet Activity'si, iOS'ta modal sohbet ekranı, web'de Web SDK
+  /// sohbet widget'ı (açık hâlde). Ekran zaten açıksa yeniden açılmaz. SDK başlatılmadıysa ya da (web) sohbet app
+  /// ayarında kapalıysa hiçbir şey yapılmaz.
+  Future<void> show() => Pushizo._channel.invokeMethod<void>('chatShow');
+
+  /// [show] ile açılan sohbet ekranını kapatır (web'de widget'ı sayfadan kaldırır); açık bir ekran kapatıldıysa `true`.
+  Future<bool> hide() async => (await Pushizo._channel.invokeMethod<bool>('chatHide')) ?? false;
+
+  /// [show] ile açılan sohbet ekranı şu an açık mı (web'de: sohbet widget'ı sayfada mı).
+  Future<bool> get isPresented async => (await Pushizo._channel.invokeMethod<bool>('chatIsPresented')) ?? false;
 
   /// Sohbeti etkinleştirir ve ziyaretçiyi bağlar (giriş yapmış kullanıcı, push aboneliği); konuşma varsa döner.
   Future<PushizoChatIdentifyResult> start({String? name, String? email, String? language}) async {
@@ -503,7 +557,8 @@ class _Chat {
     return PushizoChatIdentifyResult.fromMap(result ?? const {});
   }
 
-  /// Widget ayarları, çevrimiçi durumu, çevrimdışı metni ve ek sınırları.
+  /// Widget ayarları, çevrimiçi durumu, çevrimdışı metni ve ek sınırları. Web'de [language] yok sayılır (Web SDK dili
+  /// kullanılır).
   Future<PushizoChatConfig> getConfig({String? language}) async {
     final result = await Pushizo._channel.invokeMethod<Map<Object?, Object?>>('chatGetConfig', {'language': ?language});
     return PushizoChatConfig.fromMap(result ?? const {});
@@ -626,6 +681,23 @@ class _Inbox {
   Future<void> archive(String id) => Pushizo._channel.invokeMethod<void>('inboxArchive', {'id': id});
 
   Future<int> unreadCount() async => (await Pushizo._channel.invokeMethod<int>('inboxUnreadCount')) ?? 0;
+
+  /// Kutu değişimleri (yerel SDK kutu gözlemcisinden): `read`, `read_all` ve `archived` her işlemde, `listed` ve
+  /// `count` yalnızca okunmamış sayısı değiştiğinde gelir. Rozet güncellemek için kullanılır; [Pushizo.initialize]'dan
+  /// sonra yapılan çağrıların olayları iletilir.
+  Stream<PushizoInboxChangeEvent> get changes => Pushizo._rawEvents
+      .where((e) => e['type'] == 'inboxChange')
+      .map((e) => PushizoInboxChangeEvent.fromMap(Map<Object?, Object?>.from(e)));
+
+  /// Kutu değişim gözlemcisi ([changes] üzerine). Aynı gözlemci iki kez eklenmez.
+  void addObserver(PushizoInboxObserver observer) {
+    Pushizo._inboxObservers.putIfAbsent(observer, () => changes.listen(observer));
+  }
+
+  /// [addObserver] ile eklenen gözlemciyi kaldırır.
+  void removeObserver(PushizoInboxObserver observer) {
+    Pushizo._inboxObservers.remove(observer)?.cancel();
+  }
 }
 
 /// İçerik kartları (ADR-0082): kalıcı kart akışı (`content_card` mesajları); kartlar bildirim kutusunda görünmez.
@@ -711,13 +783,35 @@ class _FeatureFlags {
     if (json == null) return defaultValue;
     return (jsonDecode(json) as Map<String, dynamic>)['value'] ?? defaultValue;
   }
+
+  /// Bayrak değerleri sunucudan her başarıyla yenilendiğinde (oturum başı ve [refresh]) bir olay gelir; güncel değerler
+  /// [isEnabled] / [getValue] ile okunur.
+  Stream<void> get changes => Pushizo._rawEvents.where((e) => e['type'] == 'featureFlags').map((_) {});
+
+  /// Bayrak gözlemcisi ([changes] üzerine). Aynı gözlemci iki kez eklenmez.
+  void addObserver(PushizoFeatureFlagObserver observer) {
+    Pushizo._featureFlagObservers.putIfAbsent(observer, () => changes.listen((_) => observer()));
+  }
+
+  /// [addObserver] ile eklenen gözlemciyi kaldırır.
+  void removeObserver(PushizoFeatureFlagObserver observer) {
+    Pushizo._featureFlagObservers.remove(observer)?.cancel();
+  }
 }
 
 class _Session {
   const _Session();
 
-  Future<void> sendEvent(String name, {Map<String, Object?> properties = const {}, double? value}) =>
-      Pushizo._channel.invokeMethod<void>('sendEvent', {'name': name, 'properties': properties, 'value': value});
+  /// Özel olay gönderir. [eventId] (isteğe bağlı) tekilleştirme kimliğidir: reklam pikseli / Conversions API ile aynı
+  /// kimlik verilirse sunucu olayı tekilleşir (ADR-0038). 8-64 karakter; harf, rakam ve `. _ : -`. Verilmezse ya da
+  /// biçim geçersizse SDK kendi kimliğini üretir.
+  Future<void> sendEvent(String name, {Map<String, Object?> properties = const {}, double? value, String? eventId}) =>
+      Pushizo._channel.invokeMethod<void>('sendEvent', {
+        'name': name,
+        'properties': properties,
+        'value': value,
+        'eventId': ?eventId,
+      });
 }
 
 /// iOS Live Activities (ADR-0024), genel `PushizoDefaultLiveActivityAttributes` türüyle. Android'de çağrılar
@@ -802,7 +896,8 @@ class _Location {
   Future<bool> get isGeofencingEnabled async =>
       (await Pushizo._channel.invokeMethod<bool>('getGeofencingEnabled')) ?? false;
 
-  /// Konum izni verilmiş mi (Android: yaklaşık veya hassas; iOS: "kullanırken" veya "her zaman"). Web'de `false`.
+  /// Konum izni verilmiş mi (Android: yaklaşık veya hassas; iOS: "kullanırken" veya "her zaman"; web: tarayıcı konum
+  /// izninin son bilinen durumu). İstem açmaz.
   Future<bool> get permissionGranted async =>
       (await Pushizo._channel.invokeMethod<bool>('getLocationPermissionGranted')) ?? false;
 
