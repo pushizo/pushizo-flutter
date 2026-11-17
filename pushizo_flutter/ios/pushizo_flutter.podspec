@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'pushizo_flutter'
-  s.version          = '0.2.0'
+  s.version          = '0.3.0'
   s.summary          = 'Pushizo Flutter SDK (iOS köprüsü)'
   s.description      = <<-DESC
 Pushizo iOS SDK üzerine Flutter MethodChannel/EventChannel köprüsü.
@@ -12,7 +12,7 @@ Pushizo iOS SDK üzerine Flutter MethodChannel/EventChannel köprüsü.
   s.source_files = 'Classes/**/*'
   s.dependency 'Flutter'
   # Uygulama Podfile'ında: pod 'Pushizo', :path => '<repo>/sdk/ios'
-  s.dependency 'Pushizo', '~> 0.2'
+  s.dependency 'Pushizo', '~> 0.3'
   s.platform = :ios, '15.0'
 
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386' }

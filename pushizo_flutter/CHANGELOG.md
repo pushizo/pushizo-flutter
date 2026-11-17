@@ -1,3 +1,15 @@
+## 0.3.0
+
+- Android teslimat güçlendirme (ADR-0092): `Pushizo.Delivery.status()`, `shouldShowGuidance()`, `openSettings()`, `showGuidance()`; iOS ve web'de zararsız (`supported: false`).
+
+- Yerel API eşitliği: profille `login`, `User.setProperty`, `User.emails` / `smsNumbers`, `User.setAdsPersonalizationConsent`, `User.getConsents`, `Ads.setAdvertisingId`, `FeatureFlags.changes` ve `Inbox.changes` gözlemcileri, `Session.sendEvent` için `eventId`, `Chat.show()` / `hide()` / `isPresented`, `Location.permissionGranted`, `backgroundPermissionGranted`, `requestBackgroundPermission()` / `requestAlwaysPermission()`, `isInitialized`.
+
+- **Değişti:** `Notifications.setBadgeCount` ve `clearBadge` artık `Future<bool>` döndürür (önce `Future<void>`); Android'de rozet yerel SDK'ya bağlandı, `Notifications.badgeCount` eklendi.
+
+- Web: rozet (App Badging), `Location.permissionGranted`, profille `login`, gözlemciler ve sohbet yardımcıları Web SDK'ya bağlandı.
+
+- Yerel bağımlılıklar: Android `com.pushizo:pushizo-android` 0.3.0, iOS `Pushizo` ~> 0.3.
+
 ## 0.2.0
 
 - Özellik bayrakları (ADR-0066): `FeatureFlags.refresh()`, `isEnabled(key, defaultValue:)`, `getValue(key, defaultValue:)`; değerler yerel SDK'da saklanır, okuma ağa çıkmaz. Web'de Web SDK `FeatureFlags` API'sine bağlanır.

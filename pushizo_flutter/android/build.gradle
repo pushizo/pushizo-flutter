@@ -1,5 +1,5 @@
 group = "com.pushizo.pushizo_flutter"
-version = "0.2.0"
+version = "0.3.0"
 
 buildscript {
     ext.kotlin_version = "2.2.20"
@@ -54,6 +54,6 @@ dependencies {
     if (rootProject.findProject(":pushizo") != null) {
         api(project(":pushizo"))
     } else {
-        api("com.pushizo:pushizo-android:0.2.1")
+        api("com.pushizo:pushizo-android:0.3.0")
     }
 }
