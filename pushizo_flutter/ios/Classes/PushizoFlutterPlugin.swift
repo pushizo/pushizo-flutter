@@ -229,6 +229,9 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
         case "requestLocationPermission":
             // Tamamlama ana iş parçacığında çağrılır; reddedilmiş/kısıtlı izin veya eksik Info.plist anahtarı → false.
             Pushizo.Location.requestPermission(rationale: args["rationale"] as? String) { granted in result(granted) }
+        // Android teslimat güçlendirme (ADR-0092) iOS'ta yoktur: durum yok (Dart `unsupported`), diğerleri etkisiz `false`.
+        case "deliveryStatus": result(nil)
+        case "deliveryShouldShowGuidance", "deliveryOpenSettings", "deliveryShowGuidance": result(false)
         // Canlı sohbet (ADR-0040): kimlik, kuyruk, akış ve push yerel SDK'dadır.
         case "chatStart":
             inbox(result) { try await Pushizo.Chat.start(name: args["name"] as? String, email: args["email"] as? String, language: args["language"] as? String).dictionary }

@@ -75,6 +75,21 @@ final limit = await Pushizo.FeatureFlags.getValue('cart_limit', defaultValue: 3)
 Yerleşim listesi `PushizoInAppMessage` döndürür; rapor çağrıları son listeden gelen mesajla yapılır. Flutter web'de her iki
 API sayfadaki Web SDK'ya iletilir. Ayrıntı: [flutter rehberi](https://docs.pushizo.com/docs/sdk/flutter) → "Gömülü yerleşimler", "Özellik bayrakları".
 
+## Android teslimat güçlendirme
+
+```dart
+final status = await Pushizo.Delivery.status(); // supported, vendor, rom, risk, restricted, recommendedSettings
+if (await Pushizo.Delivery.shouldShowGuidance()) {      // risk var ve diyalog son 14 günde gösterilmedi
+  final opened = await Pushizo.Delivery.showGuidance(); // hazır diyalog (22 dil); kabul edilirse ayar ekranı açılır
+}
+await Pushizo.Delivery.openSettings(setting: PushizoDeliverySetting.autoStart); // kendi arayüzünüzden
+```
+
+Bazı Android üreticilerinde pil ve otomatik başlatma yöneticisi arka plandaki uygulamayı durdurur; `Pushizo.Delivery` kısıtları
+okur ve kullanıcıyı ilgili ayar ekranına götürür. Yalnızca Android'de etkilidir: iOS'ta ve web'de `status()` `supported: false` ve
+`risk: none` döner, `openSettings` ile `showGuidance` hiçbir şey yapmadan `false` döner. Ayrıntı:
+[flutter rehberi](https://docs.pushizo.com/docs/sdk/flutter) → "Android teslimat güçlendirme".
+
 ## Konum
 
 `Pushizo.Location.requestPermission()`, `setShared(bool)`, `isShared` — yalnızca ön planda, kullanıcı izniyle;

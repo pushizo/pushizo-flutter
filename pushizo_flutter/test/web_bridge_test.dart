@@ -487,6 +487,25 @@ void main() {
     });
   });
 
+  test('Android teslimat güçlendirme web\'de zararsızdır: Web SDK yüklenmemiş olsa da hata vermez', () async {
+    sdk.loaded = false;
+    expect(await call('deliveryStatus'), isNull);
+    expect(await call('deliveryShouldShowGuidance', {'minIntervalDays': 30}), isFalse);
+    expect(await call('deliveryOpenSettings', {'setting': 'auto_start'}), isFalse);
+    expect(await call('deliveryShowGuidance', {'setting': 'auto', 'message': null}), isFalse);
+    expect(sdk.calls, isEmpty);
+
+    const channel = MethodChannel('pushizo_flutter');
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, bridge.handle);
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final status = await Pushizo.Delivery.status();
+    expect(status.supported, isFalse);
+    expect(status.risk, PushizoDeliveryRisk.none);
+    expect(await Pushizo.Delivery.openSettings(), isFalse);
+    expect(await Pushizo.Delivery.showGuidance(), isFalse);
+  });
+
   test('Dart genel API\'si web köprüsüyle uçtan uca çalışır', () async {
     const channel = MethodChannel('pushizo_flutter');
     final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;

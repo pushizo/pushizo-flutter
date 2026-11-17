@@ -529,4 +529,99 @@ void main() {
     expect(click.notification.data, {'k': 'v'});
     expect(click.url, 'https://x');
   });
+
+  group('Android teslimat güçlendirme (ADR-0092)', () {
+    void mock(Object? Function(MethodCall call) reply) {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return reply(call);
+      });
+    }
+
+    test('status yerel durumu modele çevirir', () async {
+      mock((call) => {
+            'supported': true,
+            'manufacturer': 'xiaomi',
+            'brand': 'redmi',
+            'vendor': 'xiaomi',
+            'aggressiveVendor': true,
+            'rom': 'hyperos',
+            'romVersion': '1.0.2.0',
+            'notificationsEnabled': true,
+            'channelBlocked': false,
+            'batteryOptimizationExempt': false,
+            'backgroundRestricted': false,
+            'standbyBucket': 'rare',
+            'powerSaveMode': true,
+            'dataSaverEnabled': false,
+            'restricted': true,
+            'risk': 'elevated',
+            'recommendedSettings': ['auto_start', 'battery_optimization', 'gelecek_ekran'],
+          });
+      final status = await Pushizo.Delivery.status();
+      expect(calls.single.method, 'deliveryStatus');
+      expect(status.supported, isTrue);
+      expect(status.manufacturer, 'xiaomi');
+      expect(status.brand, 'redmi');
+      expect(status.vendor, 'xiaomi');
+      expect(status.aggressiveVendor, isTrue);
+      expect(status.rom, 'hyperos');
+      expect(status.romVersion, '1.0.2.0');
+      expect(status.notificationsEnabled, isTrue);
+      expect(status.batteryOptimizationExempt, isFalse);
+      expect(status.standbyBucket, 'rare');
+      expect(status.powerSaveMode, isTrue);
+      expect(status.restricted, isTrue);
+      expect(status.risk, PushizoDeliveryRisk.elevated);
+      // Bu sürümün tanımadığı ekran atlanır.
+      expect(status.recommendedSettings, [PushizoDeliverySetting.autoStart, PushizoDeliverySetting.batteryOptimization]);
+    });
+
+    test('yerel durum yoksa (iOS, web, başlatılmamış SDK) desteklenmiyor ve risk yok', () async {
+      mock((call) => null);
+      final status = await Pushizo.Delivery.status();
+      expect(status.supported, isFalse);
+      expect(status.risk, PushizoDeliveryRisk.none);
+      expect(status.restricted, isFalse);
+      expect(status.recommendedSettings, isEmpty);
+      expect(status.vendor, 'other');
+      expect(identical(status, PushizoDeliveryStatus.unsupported), isTrue);
+      // Platform `false` yerine boş yanıt verse de çağrılar `false` döner.
+      expect(await Pushizo.Delivery.shouldShowGuidance(), isFalse);
+      expect(await Pushizo.Delivery.openSettings(), isFalse);
+      expect(await Pushizo.Delivery.showGuidance(), isFalse);
+    });
+
+    test('openSettings, showGuidance ve shouldShowGuidance argümanları kanal değerleriyle iletilir', () async {
+      mock((call) => true);
+      expect(await Pushizo.Delivery.shouldShowGuidance(), isTrue);
+      expect(await Pushizo.Delivery.shouldShowGuidance(minIntervalDays: 30), isTrue);
+      expect(await Pushizo.Delivery.openSettings(), isTrue);
+      expect(await Pushizo.Delivery.openSettings(setting: PushizoDeliverySetting.autoStart), isTrue);
+      expect(await Pushizo.Delivery.showGuidance(), isTrue);
+      expect(
+        await Pushizo.Delivery.showGuidance(setting: PushizoDeliverySetting.batteryOptimization, message: 'Bildirimleri kaçırmayın'),
+        isTrue,
+      );
+      expect(calls.map((c) => c.method).toList(), [
+        'deliveryShouldShowGuidance',
+        'deliveryShouldShowGuidance',
+        'deliveryOpenSettings',
+        'deliveryOpenSettings',
+        'deliveryShowGuidance',
+        'deliveryShowGuidance',
+      ]);
+      expect(calls[0].arguments, {'minIntervalDays': null});
+      expect(calls[1].arguments, {'minIntervalDays': 30});
+      expect(calls[2].arguments, {'setting': 'auto'});
+      expect(calls[3].arguments, {'setting': 'auto_start'});
+      expect(calls[4].arguments, {'setting': 'auto', 'message': null});
+      expect(calls[5].arguments, {'setting': 'battery_optimization', 'message': 'Bildirimleri kaçırmayın'});
+    });
+
+    test('ayar ekranı kanal değerleri yerel HsDeliverySetting adlarıyla eşleşir', () {
+      expect(PushizoDeliverySetting.values.map((s) => s.wire).toList(),
+          ['auto', 'notifications', 'auto_start', 'battery_optimization', 'app_details']);
+    });
+  });
 }

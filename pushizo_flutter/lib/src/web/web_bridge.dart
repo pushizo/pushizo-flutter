@@ -226,6 +226,7 @@ class PushizoWebBridge {
     'inboxList', 'inboxMarkRead', 'inboxMarkAllRead', 'inboxArchive', 'inboxUnreadCount',
     'contentCardsList', 'contentCardEvent',
     'setLocationShared', 'getLocationShared', 'requestLocationPermission', 'setGeofencingEnabled', 'getGeofencingEnabled',
+    'deliveryStatus', 'deliveryShouldShowGuidance', 'deliveryOpenSettings', 'deliveryShowGuidance',
     'placementsList', 'placementsReportImpression', 'placementsReportClick', 'placementsReportDismiss',
     'featureFlagsRefresh', 'featureFlagsIsEnabled', 'featureFlagsGetValue',
   };
@@ -253,6 +254,10 @@ class PushizoWebBridge {
     if (!supportedMethods.contains(call.method)) {
       throw MissingPluginException('pushizo_flutter web: bilinmeyen çağrı ${call.method}');
     }
+    // Android teslimat güçlendirme (ADR-0092) web'de yoktur: Web SDK yüklenmemiş olsa da hata vermez; durum yok (Dart
+    // `unsupported`), diğerleri etkisiz `false`.
+    if (call.method == 'deliveryStatus') return null;
+    if (call.method.startsWith('delivery')) return false;
     if (!_sdk.isLoaded) throw PlatformException(code: 'NOT_READY', message: notLoadedMessage);
     final rawArgs = call.arguments;
     final args = rawArgs is Map ? rawArgs : const <Object?, Object?>{};

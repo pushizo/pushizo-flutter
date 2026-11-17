@@ -22,6 +22,7 @@
 /// await Pushizo.Chat.sendMessage('Merhaba');
 /// await Pushizo.LiveActivities.setupDefaultLiveActivity(); // yalnızca iOS
 /// if (await Pushizo.Location.requestPermission()) await Pushizo.Location.setShared(true);
+/// if (await Pushizo.Delivery.shouldShowGuidance()) await Pushizo.Delivery.showGuidance(); // yalnızca Android
 /// ```
 ///
 /// Flutter web'de çağrılar sayfaya yüklenen Web SDK'ya (`window.Pushizo`) iletilir; web'de karşılığı olmayan
@@ -38,6 +39,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 part 'src/chat_models.dart';
+part 'src/delivery_models.dart';
 part 'src/in_app_view.dart';
 part 'src/messaging_models.dart';
 part 'src/models.dart';
@@ -210,6 +212,9 @@ class Pushizo {
   static const Session = _Session();
   static const LiveActivities = _LiveActivities();
   static const Location = _Location();
+
+  /// Android teslimat güçlendirme (ADR-0092).
+  static const Delivery = _Delivery();
   static const Debug = _Debug();
 }
 
@@ -737,6 +742,38 @@ class _Location {
   /// Bölge izleme açık mı (kalıcı tercih; izin durumundan bağımsız). Web'de her zaman `false`.
   Future<bool> get isGeofencingEnabled async =>
       (await Pushizo._channel.invokeMethod<bool>('getGeofencingEnabled')) ?? false;
+}
+
+/// Android teslimat güçlendirme (ADR-0092): bazı üreticilerin pil/otomatik başlatma yöneticisi arka plandaki uygulamayı
+/// durdurduğu için bildirimler gecikir ya da gelmez. Bu API cihazdaki kısıtları okur ve kullanıcıyı ilgili ayar ekranına
+/// götürür. Yalnızca Android'de etkilidir; iOS'ta ve web'de durum [PushizoDeliveryStatus.unsupported] döner,
+/// [openSettings] ve [showGuidance] hiçbir şey yapmadan `false` döner (istisna atmaz).
+class _Delivery {
+  const _Delivery();
+
+  /// Cihazın teslim durumu: üretici, ROM, pil muafiyeti, arka plan kısıtı, risk ve önerilen ayar ekranları.
+  Future<PushizoDeliveryStatus> status() async => PushizoDeliveryStatus.fromMap(
+        await Pushizo._channel.invokeMapMethod<Object?, Object?>('deliveryStatus'),
+      );
+
+  /// Hazır açıklama diyaloğu şimdi gösterilmeli mi: teslim riski var ve diyalog son [minIntervalDays] gün içinde
+  /// gösterilmedi (verilmezse yerel SDK varsayılanı: 14 gün).
+  Future<bool> shouldShowGuidance({int? minIntervalDays}) async =>
+      (await Pushizo._channel.invokeMethod<bool>('deliveryShouldShowGuidance', {'minIntervalDays': minIntervalDays})) ??
+      false;
+
+  /// Ayar ekranını açar. [PushizoDeliverySetting.auto] duruma en uygun ekranı seçer; üreticiye özgü ekran bulunamazsa
+  /// standart Android ekranına düşülür. Bir ekran açıldıysa `true`.
+  Future<bool> openSettings({PushizoDeliverySetting setting = PushizoDeliverySetting.auto}) async =>
+      (await Pushizo._channel.invokeMethod<bool>('deliveryOpenSettings', {'setting': setting.wire})) ?? false;
+
+  /// Hazır açıklama diyaloğunu gösterir (22 dil; [message] verilirse SDK metni yerine o gösterilir). Kullanıcı kabul
+  /// ederse [setting] ekranı açılır. Ayar ekranı açıldıysa `true`; kullanıcı vazgeçtiyse, ekran açılamadıysa ya da
+  /// görünür bir Activity yoksa `false`. SDK diyaloğu kendiliğinden göstermez; uygun anı uygulama seçer
+  /// ([shouldShowGuidance]).
+  Future<bool> showGuidance({PushizoDeliverySetting setting = PushizoDeliverySetting.auto, String? message}) async =>
+      (await Pushizo._channel.invokeMethod<bool>('deliveryShowGuidance', {'setting': setting.wire, 'message': message})) ??
+      false;
 }
 
 class _Debug {

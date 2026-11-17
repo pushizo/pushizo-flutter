@@ -22,6 +22,8 @@ import com.pushizo.sdk.HsInAppMessage
 import com.pushizo.sdk.HsInAppRenderer
 import com.pushizo.sdk.HsContentCard
 import com.pushizo.sdk.HsContentCardFeed
+import com.pushizo.sdk.HsDeliverySetting
+import com.pushizo.sdk.HsDeliveryStatus
 import com.pushizo.sdk.HsInboxItem
 import com.pushizo.sdk.HsInboxPage
 import com.pushizo.sdk.HsLog
@@ -288,6 +290,22 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
                 "setGeofencingEnabled" -> { Pushizo.Location.setGeofencingEnabled(call.argument<Boolean>("enabled") ?: false); result.success(null) }
                 "getGeofencingEnabled" -> result.success(Pushizo.Location.isGeofencingEnabled)
                 "requestLocationPermission" -> requestLocationPermission(call.argument<String>("rationale"), result)
+                // Android teslimat güçlendirme (ADR-0092): teşhis, ayar ekranı adayları ve diyalog yerel SDK'dadır.
+                "deliveryStatus" -> result.success(Pushizo.Delivery.status()?.toMap())
+                "deliveryShouldShowGuidance" -> {
+                    val days = call.argument<Number>("minIntervalDays")?.toInt()
+                    result.success(if (days == null) Pushizo.Delivery.shouldShowGuidance() else Pushizo.Delivery.shouldShowGuidance(days))
+                }
+                "deliveryOpenSettings" -> {
+                    val ctx = activity ?: context
+                    result.success(ctx != null && Pushizo.Delivery.openSettings(ctx, deliverySetting(call.argument<String>("setting"))))
+                }
+                "deliveryShowGuidance" -> {
+                    // Diyalog görünür bir Activity ister; yoksa hiçbir şey gösterilmez. Sonuç ana iş parçacığında döner.
+                    val act = activity
+                    if (act == null) result.success(false)
+                    else Pushizo.Delivery.showGuidance(act, deliverySetting(call.argument<String>("setting")), call.argument<String>("message")) { opened -> result.success(opened) }
+                }
                 // Canlı sohbet (ADR-0040): kimlik, kuyruk, akış ve push yerel SDK'dadır.
                 "chatStart" -> Pushizo.Chat.start(call.argument<String>("name"), call.argument<String>("email"), call.argument<String>("language"), reply(result) { it.toMap() })
                 "chatGetConfig" -> Pushizo.Chat.getConfig(call.argument<String>("language"), reply(result) { it.toMap() })
@@ -471,6 +489,18 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
         "debug" -> HsLog.Level.DEBUG
         else -> HsLog.Level.WARN
     }
+
+    /** Kanal değeri (`auto`, `notifications`, `auto_start`, `battery_optimization`, `app_details`) → ayar ekranı; tanınmayan değer `AUTO`. */
+    private fun deliverySetting(wire: String?): HsDeliverySetting =
+        HsDeliverySetting.values().firstOrNull { it.name.equals(wire, ignoreCase = true) } ?: HsDeliverySetting.AUTO
+
+    private fun HsDeliveryStatus.toMap() = mapOf(
+        "supported" to true, "manufacturer" to manufacturer, "brand" to brand, "vendor" to vendor.id, "aggressiveVendor" to vendor.aggressive,
+        "rom" to rom, "romVersion" to romVersion, "notificationsEnabled" to notificationsEnabled, "channelBlocked" to channelBlocked,
+        "batteryOptimizationExempt" to batteryOptimizationExempt, "backgroundRestricted" to backgroundRestricted,
+        "standbyBucket" to standbyBucket?.id, "powerSaveMode" to powerSaveMode, "dataSaverEnabled" to dataSaverEnabled,
+        "restricted" to restricted, "risk" to risk.name.lowercase(), "recommendedSettings" to recommendedSettings.map { it.name.lowercase() },
+    )
 
     private fun HsNotification.toMap() = mapOf("title" to title, "body" to body, "url" to url, "deliveryId" to deliveryId, "messageId" to messageId, "data" to data, "androidNotificationId" to androidNotificationId)
     private fun HsInboxItem.toMap() = mapOf(
