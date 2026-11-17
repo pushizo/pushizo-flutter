@@ -23,6 +23,10 @@
 /// await Pushizo.LiveActivities.setupDefaultLiveActivity(); // yalnızca iOS
 /// if (await Pushizo.Location.requestPermission()) await Pushizo.Location.setShared(true);
 /// if (await Pushizo.Delivery.shouldShowGuidance()) await Pushizo.Delivery.showGuidance(); // yalnızca Android
+/// await Pushizo.login('user_42', profile: const PushizoUserProfile(email: 'ali@pushizo.com', tags: {'plan': 'pro'}));
+/// await Pushizo.User.setAdsPersonalizationConsent(true);
+/// await Pushizo.Ads.setAdvertisingId(advertisingId); // GAID / IDFA; null kaydı siler
+/// await Pushizo.Notifications.setBadgeCount(3); // yalnızca iOS
 /// ```
 ///
 /// Flutter web'de çağrılar sayfaya yüklenen Web SDK'ya (`window.Pushizo`) iletilir; web'de karşılığı olmayan
@@ -180,17 +184,24 @@ class Pushizo {
     });
   }
 
+  /// Yerel SDK başlatıldı mı ([initialize] çağrıldı mı; Android'de saklanan yapılandırmayla erken başlatma dahil).
+  static Future<bool> get isInitialized async => (await _channel.invokeMethod<bool>('isInitialized')) ?? false;
+
   static Future<void> setConsentGiven(bool given) => _channel.invokeMethod<void>('setConsentGiven', {'given': given});
 
   /// Anonim kullanıcıyı kimlikli kullanıcıya bağlar (gerekirse birleştirir). Kimlik kanıtı app ayarına göre HMAC
   /// [identityHash] ve/veya sunucunuzda imzalanmış ES256 [jwt]'dir. JWT yerel SDK'da kalıcı saklanır ve SDK
   /// isteklerinde `Authorization: Bearer` başlığıyla gider; süresi dolunca [updateUserJwt] ile yenilenir. App kanıtı
   /// zorunlu tutuyorsa ve eksikse [PlatformException] döner.
-  static Future<void> login(String externalId, {String? identityHash, String? jwt}) =>
+  ///
+  /// [profile] verilirse e-posta, SMS, etiketler ve alias'lar girişle birlikte ayarlanır. Geçersiz e-posta veya telefon
+  /// girişten önce reddedilir (`INVALID_ARGUMENT`); yarım kalmış bir kimlik değişimi olmaz.
+  static Future<void> login(String externalId, {String? identityHash, String? jwt, PushizoUserProfile? profile}) =>
       _channel.invokeMethod<void>('login', {
         'externalId': externalId,
         'identityHash': identityHash,
         'jwt': ?jwt,
+        'profile': ?profile?.toMap(),
       });
 
   /// Giriş yapmış kullanıcının kimlik JWT'sini yeniler; giriş yoksa veya belirteç boşsa [PlatformException].
@@ -215,6 +226,9 @@ class Pushizo {
 
   /// Android teslimat güçlendirme (ADR-0092).
   static const Delivery = _Delivery();
+
+  /// Mobil reklam kimliği (ADR-0037).
+  static const Ads = _Ads();
   static const Debug = _Debug();
 }
 
@@ -252,6 +266,18 @@ class _User {
   /// SMS aboneliğini siler.
   Future<void> removeSms(String phoneNumber) => Pushizo._channel.invokeMethod<void>('removeSms', {'phoneNumber': phoneNumber});
 
+  /// ADM (Fire OS) kayıt kimliğini ekler; ana FCM aboneliğinin yerine geçmez. Yalnızca Android: iOS ve web'de etkisizdir.
+  /// Geçersiz kimlikte [PlatformException] (`INVALID_ARGUMENT`).
+  Future<void> registerAdm(String token) => Pushizo._channel.invokeMethod<void>('registerAdm', {'token': token});
+
+  /// Kullanıcının bu cihazda eklenen e-posta abonelikleri. Web'de Web SDK listeyi sunmadığından boş döner.
+  Future<List<String>> get emails async =>
+      (await Pushizo._channel.invokeListMethod<String>('getEmails')) ?? const <String>[];
+
+  /// Kullanıcının bu cihazda eklenen SMS abonelikleri (E.164). Web'de boş döner.
+  Future<List<String>> get smsNumbers async =>
+      (await Pushizo._channel.invokeListMethod<String>('getSmsNumbers')) ?? const <String>[];
+
   Future<String?> get externalId => Pushizo._channel.invokeMethod<String>('getExternalId');
   Future<String?> get id => Pushizo._channel.invokeMethod<String>('getUserId');
 
@@ -269,6 +295,26 @@ class _User {
       {'preferences': preferences.map((p) => p.toMap()).toList()},
     );
     return PushizoPreferences.fromMap(result ?? const {});
+  }
+
+  /// Reklam kişiselleştirme rızası (ADR-0037): `true` iken kullanıcının e-posta/telefon özeti app'in bağladığı reklam
+  /// platformlarının kitlelerine gönderilebilir; `false` rızayı geri alır. Güncel tercih listesini döndürür.
+  /// Abonelik henüz yoksa [PlatformException] (`NOT_READY`).
+  Future<PushizoPreferences> setAdsPersonalizationConsent(bool granted) async {
+    final result = await Pushizo._channel.invokeMethod<Map<Object?, Object?>>(
+      'setAdsPersonalizationConsent',
+      {'granted': granted},
+    );
+    return PushizoPreferences.fromMap(result ?? const {});
+  }
+
+  /// Rıza kayıtları (`ads_personalization` …). Abonelik henüz yoksa [PlatformException] (`NOT_READY`).
+  Future<List<PushizoConsent>> getConsents() async {
+    final result = await Pushizo._channel.invokeListMethod<Object?>('getConsents');
+    return (result ?? const <Object?>[])
+        .whereType<Map>()
+        .map((m) => PushizoConsent.fromMap(m.cast<Object?, Object?>()))
+        .toList();
   }
 
   _PushSubscription get pushSubscription => const _PushSubscription();
@@ -332,6 +378,16 @@ class _Notifications {
 
   /// Tepsideki/bildirim merkezindeki tüm Pushizo bildirimlerini kaldırır ve rozeti sıfırlar.
   Future<void> clearAll() => Pushizo._channel.invokeMethod<void>('clearAll');
+
+  /// Uygulama rozetini ayarlar ve bildirim uzantısıyla paylaşılan sayacı eşitler. Yalnızca iOS: Android'de rozet görünen
+  /// bildirimlerden hesaplandığından ve web'de karşılığı olmadığından çağrı etkisizdir. Negatif değerde [ArgumentError].
+  Future<void> setBadgeCount(int count) {
+    if (count < 0) throw ArgumentError.value(count, 'count', 'Rozet sayısı negatif olamaz');
+    return Pushizo._channel.invokeMethod<void>('setBadgeCount', {'count': count});
+  }
+
+  /// Rozeti sıfırlar (yalnızca iOS; diğer platformlarda etkisiz).
+  Future<void> clearBadge() => setBadgeCount(0);
 
   /// Yalnızca Android: tek bir bildirimi [PushizoNotification.androidNotificationId] ile kaldırır (iOS'ta etkisiz;
   /// iOS için [removeNotificationByIdentifier]).
@@ -524,6 +580,9 @@ class _Chat {
 
   /// Bu cihazın ziyaretçi kimliği (sohbet henüz kullanılmadıysa null).
   Future<String?> get visitorId => Pushizo._channel.invokeMethod<String>('chatGetVisitorId');
+
+  /// Canlı olay akışı ([startListening]) açık mı. Web'de her zaman `false`.
+  Future<bool> get isListening async => (await Pushizo._channel.invokeMethod<bool>('chatIsListening')) ?? false;
 
   /// Canlı sohbet olayları (mesaj, yazıyor, okundu, okunmamış, konuşma, bağlantı, hata).
   Stream<PushizoChatEvent> get events => Pushizo._rawEvents
@@ -734,14 +793,33 @@ class _Location {
 
   /// Arka plan bölge izlemeyi açar/kapatır (ADR-0065; varsayılan kapalı, tercih kalıcı). İzlemeyi işletim sistemi yapar,
   /// sunucuya koordinat gitmez, yalnızca bölgeye giriş/çıkış bildirilir. [setShared] açık ve arka plan ("her zaman")
-  /// konum izni verilmiş olmalıdır; izin ve manifest/Info.plist girdileri uygulamanın sorumluluğundadır (köprü izin
-  /// istemez). Web'de etkisizdir.
+  /// konum izni verilmiş olmalıdır ([requestBackgroundPermission]); manifest/Info.plist girdileri uygulamanın
+  /// sorumluluğundadır ve bu çağrı izin istemi açmaz. Web'de etkisizdir.
   Future<void> setGeofencingEnabled(bool enabled) =>
       Pushizo._channel.invokeMethod<void>('setGeofencingEnabled', {'enabled': enabled});
 
   /// Bölge izleme açık mı (kalıcı tercih; izin durumundan bağımsız). Web'de her zaman `false`.
   Future<bool> get isGeofencingEnabled async =>
       (await Pushizo._channel.invokeMethod<bool>('getGeofencingEnabled')) ?? false;
+
+  /// Konum izni verilmiş mi (Android: yaklaşık veya hassas; iOS: "kullanırken" veya "her zaman"). Web'de `false`.
+  Future<bool> get permissionGranted async =>
+      (await Pushizo._channel.invokeMethod<bool>('getLocationPermissionGranted')) ?? false;
+
+  /// Arka plan konum izni verilmiş mi (Android `ACCESS_BACKGROUND_LOCATION`, iOS "her zaman"). Web'de `false`.
+  Future<bool> get backgroundPermissionGranted async =>
+      (await Pushizo._channel.invokeMethod<bool>('getLocationBackgroundPermissionGranted')) ?? false;
+
+  /// Arka plan konum iznini ister (bölge izleme için); sonuç izin verildi mi. Android'de önce açıklama diyaloğu
+  /// ([rationale]; verilmezse SDK'nın yerelleştirilmiş metni) gösterilir, Android 11 ve sonrasında sistem Ayarlar
+  /// ekranını açar; manifest'te `ACCESS_BACKGROUND_LOCATION` yoksa `false`. iOS'ta "her zaman" izni istenir
+  /// ([rationale] yok sayılır). Önce [requestPermission] ile ön plan izni alınmış olmalıdır. Web'de `false`.
+  Future<bool> requestBackgroundPermission({String? rationale}) async =>
+      (await Pushizo._channel.invokeMethod<bool>('requestLocationBackgroundPermission', {'rationale': rationale})) ??
+      false;
+
+  /// [requestBackgroundPermission] ile aynı izin (iOS adlandırması): iOS'ta "her zaman", Android'de arka plan konum izni.
+  Future<bool> requestAlwaysPermission() => requestBackgroundPermission();
 }
 
 /// Android teslimat güçlendirme (ADR-0092): bazı üreticilerin pil/otomatik başlatma yöneticisi arka plandaki uygulamayı
@@ -774,6 +852,16 @@ class _Delivery {
   Future<bool> showGuidance({PushizoDeliverySetting setting = PushizoDeliverySetting.auto, String? message}) async =>
       (await Pushizo._channel.invokeMethod<bool>('deliveryShowGuidance', {'setting': setting.wire, 'message': message})) ??
       false;
+}
+
+/// Mobil reklam kimliği (GAID / IDFA; ADR-0037). SDK reklam kitaplığı içermez ve izin istemez: uygulama, kullanıcı
+/// izin verdiyse kimliği kendisi alıp verir. Kimlik yalnızca `ads_personalization` rızası olan kullanıcılarda ve
+/// SHA-256 özetiyle reklam kitlesine gönderilir.
+class _Ads {
+  const _Ads();
+
+  /// Reklam kimliğini yazar; `null` veya sıfır kimlik sunucudaki kaydı siler. Web'de etkisizdir.
+  Future<void> setAdvertisingId(String? id) => Pushizo._channel.invokeMethod<void>('setAdvertisingId', {'id': id});
 }
 
 class _Debug {

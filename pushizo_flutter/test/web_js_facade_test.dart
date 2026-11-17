@@ -35,6 +35,7 @@ const _fakeSdk = r'''
     User: {
       addEmail(email) { throw new ContactValidationError(); },
       getTags() { return { plan: 'pro', n: 3 }; },
+      setAdsPersonalizationConsent(granted) { calls.push(['setAdsPersonalizationConsent', granted]); },
       get externalId() { return 'u1'; },
       id: null,
       pushSubscription: {
@@ -140,6 +141,15 @@ void main() {
       facade.setLocationShared(true),
       throwsA(isA<WebSdkError>().having((e) => webErrorCode(e), 'kod', 'NOT_READY')),
     );
+  });
+
+  test('reklam kişiselleştirme rızası User.setAdsPersonalizationConsent ile yazılır', () async {
+    await facade.setAdsPersonalizationConsent(true);
+    await facade.setAdsPersonalizationConsent(false);
+    expect(calls(), [
+      ['setAdsPersonalizationConsent', true],
+      ['setAdsPersonalizationConsent', false],
+    ]);
   });
 
   test('getter ve dönüş değerleri Dart değerlerine çevrilir', () async {

@@ -4,6 +4,7 @@ import Pushizo
 #if canImport(PushizoCore)
 import PushizoCore
 #endif
+import CoreLocation
 import UIKit
 import UserNotifications
 
@@ -94,7 +95,24 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
             if let message = Pushizo.loginProofError(identityHash: identityHash, jwt: jwt) {
                 result(FlutterError(code: "HS_ERROR", message: message, details: nil)); return
             }
-            Pushizo.login(args["externalId"] as? String ?? "", identityHash: identityHash, jwt: jwt); result(nil)
+            // Profil (Android `HsUserProfile` ile aynı davranış): geçersiz e-posta/telefon girişten önce reddedilir,
+            // sonra giriş yapılır ve alanlar sırayla ayarlanır.
+            let profile = args["profile"] as? [String: Any]
+            let email = profile?["email"] as? String
+            let sms = profile?["sms"] as? String
+            if let email, HSContacts.normalizeEmail(email) == nil {
+                result(FlutterError(code: "INVALID_ARGUMENT", message: "Geçersiz e-posta adresi.", details: nil)); return
+            }
+            if let sms, HSContacts.normalizePhone(sms) == nil {
+                result(FlutterError(code: "INVALID_ARGUMENT", message: "Geçersiz telefon numarası (E.164 bekleniyor).", details: nil)); return
+            }
+            Pushizo.login(args["externalId"] as? String ?? "", identityHash: identityHash, jwt: jwt)
+            if let email { Pushizo.User.addEmail(email) }
+            if let sms { Pushizo.User.addSms(sms) }
+            if let tags = profile?["tags"] as? [String: String], !tags.isEmpty { Pushizo.User.addTags(tags) }
+            if let aliases = profile?["aliases"] as? [String: String], !aliases.isEmpty { Pushizo.User.addAliases(aliases) }
+            result(nil)
+        case "isInitialized": result(Pushizo.isInitialized)
         case "updateUserJwt":
             do {
                 try Pushizo.updateUserJwt(args["jwt"] as? String ?? "")
@@ -117,6 +135,17 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
             result(nil)
         case "setLanguage": Pushizo.User.setLanguage(args["code"] as? String ?? "en"); result(nil)
         case "getExternalId": result(Pushizo.User.externalId)
+        case "getEmails": result(Pushizo.User.emails)
+        case "getSmsNumbers": result(Pushizo.User.smsNumbers)
+        // ADM (Fire OS) yalnızca Android'dedir; iOS'ta etkisiz.
+        case "registerAdm": result(nil)
+        // Reklam kişiselleştirme rızası ve reklam kimliği (ADR-0037)
+        case "setAdsPersonalizationConsent":
+            let granted = args["granted"] as? Bool ?? false
+            inbox(result) { Self.map(try await Pushizo.User.setAdsPersonalizationConsent(granted)) }
+        case "getConsents":
+            inbox(result) { try await Pushizo.User.getConsents().map { Self.map($0) } }
+        case "setAdvertisingId": Pushizo.Ads.setAdvertisingId(args["id"] as? String); result(nil)
         case "getUserId": result(Pushizo.User.id)
         case "getSubscriptionState":
             Task { let s = await Pushizo.User.pushSubscription.state(); DispatchQueue.main.async { result(Self.map(s)) } }
@@ -130,6 +159,8 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
         // (`UNNotificationRequest.identifier`) tekil kaldırma. Yalnızca Android tepsi kimliği verildiyse iOS'ta karşılığı
         // olmadığından çağrı etkisiz tamamlanır.
         case "clearAll": Pushizo.Notifications.clearAll(); result(nil)
+        // Rozet: uygulama simgesi ve bildirim uzantısıyla paylaşılan sayaç (negatif değer sıfıra çekilir).
+        case "setBadgeCount": Pushizo.Notifications.setBadgeCount(max(0, (args["count"] as? NSNumber)?.intValue ?? 0)); result(nil)
         case "removeGroupedNotifications": Pushizo.Notifications.removeGroupedNotifications(args["group"] as? String ?? ""); result(nil)
         case "removeNotification":
             if let identifier = args["identifier"] as? String, !identifier.isEmpty {
@@ -229,6 +260,12 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
         case "requestLocationPermission":
             // Tamamlama ana iş parçacığında çağrılır; reddedilmiş/kısıtlı izin veya eksik Info.plist anahtarı → false.
             Pushizo.Location.requestPermission(rationale: args["rationale"] as? String) { granted in result(granted) }
+        // İzin durumu yerel SDK'da sunulmaz; köprü CoreLocation yetki durumundan hesaplar.
+        case "getLocationPermissionGranted": result(Self.locationPermission(background: false))
+        case "getLocationBackgroundPermissionGranted": result(Self.locationPermission(background: true))
+        // Arka plan konum izni iOS'ta "her zaman" iznidir (Android'deki açıklama metni kullanılmaz); sonuç ana iş parçacığında döner.
+        case "requestLocationBackgroundPermission":
+            Pushizo.Location.requestAlwaysPermission { granted in result(granted) }
         // Android teslimat güçlendirme (ADR-0092) iOS'ta yoktur: durum yok (Dart `unsupported`), diğerleri etkisiz `false`.
         case "deliveryStatus": result(nil)
         case "deliveryShouldShowGuidance", "deliveryOpenSettings", "deliveryShowGuidance": result(false)
@@ -265,6 +302,7 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
         case "chatAttachmentUrl":
             inbox(result) { try Pushizo.Chat.attachmentUrl(args["attachmentId"] as? String ?? "", download: args["download"] as? Bool ?? false).absoluteString }
         case "chatGetVisitorId": result(Pushizo.Chat.visitorId)
+        case "chatIsListening": result(Pushizo.Chat.isListening)
         // Live Activities (ADR-0024): genel `PushizoDefaultLiveActivityAttributes` türü; değer doğrulaması yerel SDK'dadır.
         case "setupDefaultLiveActivity":
             liveActivity(result) { try Pushizo.LiveActivities.setupDefaultLiveActivity() }
@@ -450,6 +488,16 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
 
     private static func map(_ p: HSPreference) -> [String: Any] {
         ["category": p.category, "channel": p.channel as Any, "optedIn": p.optedIn, "explicit": p.explicit, "source": p.source as Any, "updatedAt": millis(p.updatedAt)]
+    }
+
+    private static func map(_ c: HSUserConsent) -> [String: Any] {
+        ["purpose": c.purpose, "granted": c.granted, "source": c.source as Any, "updatedAt": millis(c.updatedAt)]
+    }
+
+    /// Konum yetkisi: `background` false ise "kullanırken" veya "her zaman", true ise yalnızca "her zaman".
+    private static func locationPermission(background: Bool) -> Bool {
+        let status = CLLocationManager().authorizationStatus
+        return status == .authorizedAlways || (!background && status == .authorizedWhenInUse)
     }
 
     private static func map(_ c: HSMessageCategory) -> [String: Any] {

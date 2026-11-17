@@ -90,6 +90,37 @@ okur ve kullanıcıyı ilgili ayar ekranına götürür. Yalnızca Android'de et
 `risk: none` döner, `openSettings` ile `showGuidance` hiçbir şey yapmadan `false` döner. Ayrıntı:
 [flutter rehberi](https://docs.pushizo.com/docs/sdk/flutter) → "Android teslimat güçlendirme".
 
+## Kimlik profili, rıza, rozet ve konum izni
+
+Yerel Android ve iOS SDK'larındaki kimlik, rıza, reklam kimliği, rozet ve konum izni çağrıları Flutter'da da vardır. Yalnızca tek platformda anlamı olan çağrı diğer platformlarda hata vermez; etkisiz kalır ya da `false` / boş liste döner.
+
+```dart
+// Profille giriş: geçersiz e-posta/telefon girişten önce reddedilir (INVALID_ARGUMENT)
+await Pushizo.login('user_42', profile: const PushizoUserProfile(email: 'ali@pushizo.com', sms: '+905321234567', tags: {'plan': 'pro'}));
+final emails = await Pushizo.User.emails;           // smsNumbers; web'de boş
+final ready = await Pushizo.isInitialized;
+
+// Reklam kişiselleştirme rızası ve reklam kimliği
+await Pushizo.User.setAdsPersonalizationConsent(true);   // güncel tercih listesini döndürür
+final consents = await Pushizo.User.getConsents();        // purpose, granted, source, updatedAt
+await Pushizo.Ads.setAdvertisingId(advertisingId);        // GAID / IDFA; null kaydı siler
+
+// Rozet (yalnızca iOS; Android ve web'de etkisiz)
+await Pushizo.Notifications.setBadgeCount(3);
+await Pushizo.Notifications.clearBadge();
+
+// Konum izni durumu ve arka plan izni (bölge izleme için)
+if (await Pushizo.Location.permissionGranted && !await Pushizo.Location.backgroundPermissionGranted) {
+  final granted = await Pushizo.Location.requestBackgroundPermission(rationale: 'Mağazaya yaklaşınca haber veririz.');
+  if (granted) await Pushizo.Location.setGeofencingEnabled(true);
+}
+
+final listening = await Pushizo.Chat.isListening;         // canlı sohbet akışı açık mı
+await Pushizo.User.registerAdm(admRegistrationId);        // yalnızca Android (Fire OS)
+```
+
+`requestBackgroundPermission` Android'de açıklama diyaloğunu ve sistem iznini (Android 11 ve sonrasında Ayarlar ekranı), iOS'ta "her zaman" iznini ister; `requestAlwaysPermission()` aynı çağrının iOS adıdır. Android manifest'inde `ACCESS_BACKGROUND_LOCATION` yoksa `false` döner. Reklam kimliğini uygulama alır (SDK reklam kitaplığı ve ATT istemi içermez); kimlik yalnızca `ads_personalization` rızası olan kullanıcıda ve SHA-256 özetiyle kullanılır. Web'de rıza çağrıları Web SDK'ya gider; reklam kimliği, rozet, ADM ve konum izni çağrıları etkisizdir.
+
 ## Konum
 
 `Pushizo.Location.requestPermission()`, `setShared(bool)`, `isShared` — yalnızca ön planda, kullanıcı izniyle;
@@ -97,7 +128,8 @@ okur ve kullanıcıyı ilgili ayar ekranına götürür. Yalnızca Android'de et
 [flutter rehberi](https://docs.pushizo.com/docs/sdk/flutter) → "Konum".
 
 Arka plan bölge izleme (varsayılan kapalı): `Pushizo.Location.setGeofencingEnabled(true)`, `isGeofencingEnabled`.
-Köprü izin istemez; arka plan konum iznini ve manifest/Info.plist girdilerini uygulama ekler. Web'de etkisizdir.
+İzlemeyi açmak izin istemi açmaz; arka plan izni `Pushizo.Location.requestBackgroundPermission()` ile istenir,
+manifest/Info.plist girdilerini uygulama ekler. Web'de etkisizdir.
 
 ## Live Activities (iOS)
 

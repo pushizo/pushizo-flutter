@@ -62,6 +62,9 @@ abstract interface class WebSdkFacade {
   Future<Map<Object?, Object?>> getPreferences();
   Future<void> setPreferences(List<Map<String, Object?>> preferences);
 
+  /// `User.setAdsPersonalizationConsent`: reklam kişiselleştirme rızası (çevrimdışı kuyruğa alınır, sonuç döndürmez).
+  Future<void> setAdsPersonalizationConsent(bool granted);
+
   /// `User.pushSubscription.state` (`permission` Web SDK izin durumu dizesidir).
   Future<Map<Object?, Object?>> pushSubscriptionState();
   Future<void> optIn();
@@ -229,7 +232,28 @@ class PushizoWebBridge {
     'deliveryStatus', 'deliveryShouldShowGuidance', 'deliveryOpenSettings', 'deliveryShowGuidance',
     'placementsList', 'placementsReportImpression', 'placementsReportClick', 'placementsReportDismiss',
     'featureFlagsRefresh', 'featureFlagsIsEnabled', 'featureFlagsGetValue',
+    'isInitialized', 'getEmails', 'getSmsNumbers', 'registerAdm', 'setAdsPersonalizationConsent', 'getConsents',
+    'setAdvertisingId', 'setBadgeCount', 'getLocationPermissionGranted', 'getLocationBackgroundPermissionGranted',
+    'requestLocationBackgroundPermission', 'chatIsListening',
   };
+
+  /// Web'de karşılığı olmayan ama zararsız tamamlanan yöntemler (Web SDK yüklenmemiş olsa da hata vermez): reklam kimliği,
+  /// rozet ve ADM kaydı etkisizdir; e-posta/SMS listesi Web SDK'da sunulmadığından boştur; konum izni durumu, arka plan
+  /// konum izni ve sohbet akışı durumu `false` döner.
+  static const Map<String, Object?> _inertResults = {
+    'setAdvertisingId': null,
+    'setBadgeCount': null,
+    'registerAdm': null,
+    'getEmails': <String>[],
+    'getSmsNumbers': <String>[],
+    'getLocationPermissionGranted': false,
+    'getLocationBackgroundPermissionGranted': false,
+    'requestLocationBackgroundPermission': false,
+    'chatIsListening': false,
+  };
+
+  /// `initialize` başarıyla tamamlandı mı (`Pushizo.isInitialized`).
+  bool _initialized = false;
 
   /// Yerleşim anahtarı kuralı (sunucu ve yerel SDK'larla aynı).
   static final RegExp _placementKey = RegExp(r'^[a-z][a-z0-9_.-]{0,63}$');
@@ -258,6 +282,8 @@ class PushizoWebBridge {
     // `unsupported`), diğerleri etkisiz `false`.
     if (call.method == 'deliveryStatus') return null;
     if (call.method.startsWith('delivery')) return false;
+    if (_inertResults.containsKey(call.method)) return _inertResults[call.method];
+    if (call.method == 'isInitialized') return _initialized && _sdk.isLoaded;
     if (!_sdk.isLoaded) throw PlatformException(code: 'NOT_READY', message: notLoadedMessage);
     final rawArgs = call.arguments;
     final args = rawArgs is Map ? rawArgs : const <Object?, Object?>{};
@@ -271,10 +297,12 @@ class PushizoWebBridge {
   /// Web SDK düz `Error` attığında yönteme göre kod: inbox/tercihlerde abonelik eksikliği `NOT_READY` (iOS köprüsüyle
   /// aynı), alias doğrulaması `INVALID_ARGUMENT`, diğerleri `HS_ERROR`.
   static String _fallbackCode(String method) {
-    if (method.startsWith('inbox') || method == 'getPreferences' || method == 'setPreferences') return 'NOT_READY';
+    if (method.startsWith('inbox') || _preferenceMethods.contains(method)) return 'NOT_READY';
     if (method == 'addAliases' || method == 'removeAlias') return 'INVALID_ARGUMENT';
     return 'HS_ERROR';
   }
+
+  static const Set<String> _preferenceMethods = {'getPreferences', 'setPreferences', 'setAdsPersonalizationConsent', 'getConsents'};
 
   Future<Object?> _dispatch(String method, Map<Object?, Object?> args) async {
     switch (method) {
@@ -282,6 +310,7 @@ class PushizoWebBridge {
         _requireNonEmpty(args, 'appId');
         await _sdk.init(webInitOptions(args));
         _attachListeners();
+        _initialized = true;
         return null;
       case 'setConsentGiven':
         await _sdk.setConsentGiven(args['given'] == true);
@@ -289,6 +318,18 @@ class PushizoWebBridge {
       case 'login':
         final externalId = _requireNonEmpty(args, 'externalId');
         await _sdk.login(externalId, identityHash: _optionalString(args, 'identityHash'), jwt: _optionalString(args, 'jwt'));
+        // Profil (Android `HsUserProfile` ile aynı sıra): e-posta, SMS, etiketler, alias'lar; doğrulama Web SDK'dadır.
+        final profile = args['profile'];
+        if (profile is Map) {
+          final email = profile['email'];
+          final sms = profile['sms'];
+          final tags = _stringMap(profile['tags']);
+          final aliases = _stringMap(profile['aliases']);
+          if (email is String) await _sdk.addEmail(email);
+          if (sms is String) await _sdk.addSms(sms);
+          if (tags.isNotEmpty) await _sdk.addTags(tags);
+          if (aliases.isNotEmpty) await _sdk.addAliases(aliases);
+        }
         return null;
       case 'updateUserJwt':
         // Boş belirteç Android/iOS köprüleriyle aynı biçimde INVALID_ARGUMENT döner.
@@ -334,6 +375,14 @@ class PushizoWebBridge {
         return mapPreferences(await _sdk.getPreferences());
       case 'setPreferences':
         return _setPreferences(args['preferences']);
+      // Web SDK rızayı kuyruğa alır ve sonuç döndürmez: Android/iOS ile aynı sözleşme için önce güncel liste okunur
+      // (abonelik yoksa `NOT_READY`), sonra rıza yazılır ve tercih listesi döndürülür.
+      case 'setAdsPersonalizationConsent':
+        final current = mapPreferences(await _sdk.getPreferences());
+        await _sdk.setAdsPersonalizationConsent(args['granted'] == true);
+        return current;
+      case 'getConsents':
+        return mapConsents(await _sdk.getPreferences());
       case 'getSubscriptionState':
         return mapSubscriptionState(await _sdk.pushSubscriptionState());
       case 'optIn':
@@ -678,6 +727,18 @@ class PushizoWebBridge {
       };
 
   /// Web SDK `{preferences, categories}` → köprü biçimi `{data, categories}` (zamanlar epoch ms).
+  /// Web SDK tercih sonucundaki rıza kayıtları (`consents`) → köprü biçimi.
+  static List<Map<String, Object?>> mapConsents(Map<Object?, Object?> result) => [
+        for (final c in (result['consents'] as List?) ?? const [])
+          if (c is Map && c['purpose'] is String)
+            {
+              'purpose': c['purpose'],
+              'granted': c['granted'] == true,
+              'source': c['source'] as String?,
+              'updatedAt': _millis(c['updatedAt']),
+            },
+      ];
+
   static Map<String, Object?> mapPreferences(Map<Object?, Object?> result) => {
         'data': [
           for (final p in (result['preferences'] as List?) ?? const [])

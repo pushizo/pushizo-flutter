@@ -156,6 +156,10 @@ class JsWebSdkFacade implements WebSdkFacade {
       _call(_ns('User'), 'setPreferences', [preferences.jsify()]);
 
   @override
+  Future<void> setAdsPersonalizationConsent(bool granted) =>
+      _call(_ns('User'), 'setAdsPersonalizationConsent', [granted.toJS]);
+
+  @override
   Future<Map<Object?, Object?>> pushSubscriptionState() async => _map(_get(_pushSubscription, 'state'));
 
   @override

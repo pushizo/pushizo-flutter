@@ -521,6 +521,44 @@ class PushizoPreferences {
       );
 }
 
+/// Rıza kaydı (`User.getConsents`): [purpose] rıza amacıdır (`ads_personalization` …); kayıt yoksa [granted] false.
+class PushizoConsent {
+  const PushizoConsent({required this.purpose, required this.granted, this.source, this.updatedAt});
+
+  final String purpose;
+  final bool granted;
+
+  /// Kaydı yazan taraf (`sdk`, `api`, `dashboard` …); kayıt yoksa null.
+  final String? source;
+  final DateTime? updatedAt;
+
+  factory PushizoConsent.fromMap(Map<Object?, Object?> map) => PushizoConsent(
+        purpose: map['purpose'] as String? ?? '',
+        granted: map['granted'] == true,
+        source: map['source'] as String?,
+        updatedAt: _epochMs(map['updatedAt']),
+      );
+}
+
+/// Girişle birlikte ayarlanan profil: `Pushizo.login('user_42', profile: const PushizoUserProfile(email: 'ali@pushizo.com'))`.
+class PushizoUserProfile {
+  const PushizoUserProfile({this.email, this.sms, this.tags = const {}, this.aliases = const {}});
+
+  final String? email;
+
+  /// Telefon numarası (E.164'e normalize edilir).
+  final String? sms;
+  final Map<String, String> tags;
+  final Map<String, String> aliases;
+
+  Map<String, Object?> toMap() => {
+        'email': ?email,
+        'sms': ?sms,
+        if (tags.isNotEmpty) 'tags': tags,
+        if (aliases.isNotEmpty) 'aliases': aliases,
+      };
+}
+
 /// `User.setPreferences` girdisi; [channel] null ise tüm kanallar.
 class PushizoPreferenceInput {
   const PushizoPreferenceInput({required this.category, required this.optedIn, this.channel});

@@ -263,6 +263,27 @@ void main() {
           ],
         };
 
+    test('reklam rızası kuyruğa yazılır ve güncel tercih listesi döner; rıza kayıtları eşlenir', () async {
+      sdk.values['getPreferences'] = {
+        ...webPreferences(),
+        'consents': [
+          {'purpose': 'ads_personalization', 'granted': true, 'source': 'sdk', 'updatedAt': '2026-10-01T00:00:00.000Z'},
+          {'granted': true},
+        ],
+      };
+      final result = await call('setAdsPersonalizationConsent', {'granted': true});
+      expect(sdk.calls.map((c) => c.first), ['getPreferences', 'setAdsPersonalizationConsent']);
+      expect(sdk.calls.last, ['setAdsPersonalizationConsent', true]);
+      expect(PushizoPreferences.fromMap((result as Map).cast()).preferences.map((p) => p.category), ['orders', 'promos']);
+      final consents = (await call('getConsents') as List).map((c) => PushizoConsent.fromMap((c as Map).cast())).toList();
+      expect(consents.single.purpose, 'ads_personalization');
+      expect(consents.single.granted, isTrue);
+      expect(consents.single.updatedAt, DateTime.utc(2026, 10));
+      sdk.failures['getPreferences'] = const WebSdkError('Tercihler için abonelik gerekli');
+      await expectLater(call('setAdsPersonalizationConsent', {'granted': false}), platformError('NOT_READY'));
+      await expectLater(call('getConsents'), platformError('NOT_READY'));
+    });
+
     test('getPreferences köprü biçimine eşlenir', () async {
       sdk.values['getPreferences'] = webPreferences();
       final prefs = PushizoPreferences.fromMap((await call('getPreferences') as Map).cast());
@@ -487,6 +508,40 @@ void main() {
     });
   });
 
+  test('yalnızca yerel platformlarda anlamlı API\'ler web\'de zararsızdır: Web SDK yüklenmemiş olsa da hata vermez', () async {
+    sdk.loaded = false;
+    expect(await call('setAdvertisingId', {'id': 'x'}), isNull);
+    expect(await call('setBadgeCount', {'count': 3}), isNull);
+    expect(await call('registerAdm', {'token': 't'}), isNull);
+    expect(await call('getEmails'), isEmpty);
+    expect(await call('getSmsNumbers'), isEmpty);
+    expect(await call('getLocationPermissionGranted'), isFalse);
+    expect(await call('getLocationBackgroundPermissionGranted'), isFalse);
+    expect(await call('requestLocationBackgroundPermission', {'rationale': null}), isFalse);
+    expect(await call('chatIsListening'), isFalse);
+    expect(await call('isInitialized'), isFalse);
+    expect(sdk.calls, isEmpty);
+  });
+
+  test('isInitialized initialize sonrasında true; profille login Web SDK çağrılarına açılır', () async {
+    expect(await call('isInitialized'), isFalse);
+    await call('initialize', {'appId': 'app_1'});
+    expect(await call('isInitialized'), isTrue);
+    sdk.calls.clear();
+    await call('login', {
+      'externalId': 'u1',
+      'identityHash': null,
+      'profile': {'email': 'ali@pushizo.com', 'sms': '+905321234567', 'tags': {'plan': 'pro'}, 'aliases': {'crm_id': '42'}},
+    });
+    expect(sdk.calls, [
+      ['login', 'u1', null, null],
+      ['addEmail', 'ali@pushizo.com'],
+      ['addSms', '+905321234567'],
+      ['addTags', {'plan': 'pro'}],
+      ['addAliases', {'crm_id': '42'}],
+    ]);
+  });
+
   test('Android teslimat güçlendirme web\'de zararsızdır: Web SDK yüklenmemiş olsa da hata vermez', () async {
     sdk.loaded = false;
     expect(await call('deliveryStatus'), isNull);
@@ -623,6 +678,8 @@ class FakeWebSdk implements WebSdkFacade {
   Future<Map<Object?, Object?>> getPreferences() async => (await _record<Map<Object?, Object?>?>('getPreferences')) ?? {};
   @override
   Future<void> setPreferences(List<Map<String, Object?>> preferences) => _record('setPreferences', [preferences]);
+  @override
+  Future<void> setAdsPersonalizationConsent(bool granted) => _record('setAdsPersonalizationConsent', [granted]);
   @override
   Future<Map<Object?, Object?>> pushSubscriptionState() async =>
       (await _record<Map<Object?, Object?>?>('pushSubscriptionState')) ?? {};
