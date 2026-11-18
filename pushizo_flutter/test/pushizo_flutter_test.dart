@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -243,6 +244,183 @@ void main() {
     });
   });
 
+  group('Bölge izleme', () {
+    test('setGeofencingEnabled ve isGeofencingEnabled platforma iletilir; varsayılan kapalı', () async {
+      expect(await Pushizo.Location.isGeofencingEnabled, isFalse);
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return call.method == 'getGeofencingEnabled' ? true : null;
+      });
+      await Pushizo.Location.setGeofencingEnabled(true);
+      expect(await Pushizo.Location.isGeofencingEnabled, isTrue);
+      await Pushizo.Location.setGeofencingEnabled(false);
+      expect(calls.map((c) => c.method).toList(), ['getGeofencingEnabled', 'setGeofencingEnabled', 'getGeofencingEnabled', 'setGeofencingEnabled']);
+      expect(calls[1].arguments, {'enabled': true});
+      expect(calls[2].arguments, isNull);
+      expect(calls[3].arguments, {'enabled': false});
+    });
+
+    test('yerel köprüler: Android ve iOS SDK çağrıları; izin yalnızca açık çağrıyla istenir, manifest\'e izin eklenmez', () {
+      String read(String path) => File(path).readAsStringSync().replaceAll('\r\n', '\n');
+      final kt = read('android/src/main/kotlin/com/pushizo/pushizo_flutter/PushizoFlutterPlugin.kt');
+      expect(kt, contains('"setGeofencingEnabled" -> { Pushizo.Location.setGeofencingEnabled(call.argument<Boolean>("enabled") ?: false); result.success(null) }'));
+      expect(kt, contains('"getGeofencingEnabled" -> result.success(Pushizo.Location.isGeofencingEnabled)'));
+      // Arka plan izni yalnızca `requestLocationBackgroundPermission` ile istenir; izlemeyi açmak izin istemi açmaz.
+      expect(RegExp('ACCESS_BACKGROUND_LOCATION').allMatches(kt.substring(0, kt.indexOf('* Arka plan konum izni (bölge izleme)'))), isEmpty);
+      expect(read('android/src/main/AndroidManifest.xml'), isNot(contains('uses-permission')));
+      final swift = read('ios/Classes/PushizoFlutterPlugin.swift');
+      expect(swift, contains('case "setGeofencingEnabled": Pushizo.Location.setGeofencingEnabled(args["enabled"] as? Bool ?? false); result(nil)'));
+      expect(swift, contains('case "getGeofencingEnabled": result(Pushizo.Location.isGeofencingEnabled)'));
+      expect(RegExp('requestAlwaysPermission').allMatches(swift), hasLength(1));
+      expect(swift, contains('case "requestLocationBackgroundPermission":\n            Pushizo.Location.requestAlwaysPermission'));
+    });
+  });
+
+  group('Özellik bayrakları', () {
+    test('refresh, isEnabled ve getValue platforma iletilir; JSON değer çözülür', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return switch (call.method) {
+          'featureFlagsRefresh' => true,
+          'featureFlagsIsEnabled' => true,
+          'featureFlagsGetValue' => switch ((call.arguments as Map)['key']) {
+              'limit' => '{"value":3}',
+              'theme' => '{"value":{"color":"#112233","sizes":[1,2.5]}}',
+              'label' => '{"value":"Yeni"}',
+              _ => null,
+            },
+          _ => null,
+        };
+      });
+      expect(await Pushizo.FeatureFlags.refresh(), isTrue);
+      expect(await Pushizo.FeatureFlags.isEnabled('new_checkout'), isTrue);
+      expect(await Pushizo.FeatureFlags.isEnabled('beta', defaultValue: true), isTrue);
+      expect(await Pushizo.FeatureFlags.getValue('limit'), 3);
+      expect(await Pushizo.FeatureFlags.getValue('theme'), {'color': '#112233', 'sizes': [1, 2.5]});
+      expect(await Pushizo.FeatureFlags.getValue('label'), 'Yeni');
+      expect(await Pushizo.FeatureFlags.getValue('missing'), isNull);
+      expect(await Pushizo.FeatureFlags.getValue('missing', defaultValue: 'x'), 'x');
+      expect(calls.map((c) => c.method).toList(), [
+        'featureFlagsRefresh', 'featureFlagsIsEnabled', 'featureFlagsIsEnabled',
+        'featureFlagsGetValue', 'featureFlagsGetValue', 'featureFlagsGetValue', 'featureFlagsGetValue', 'featureFlagsGetValue',
+      ]);
+      expect(calls[0].arguments, isNull);
+      expect(calls[1].arguments, {'key': 'new_checkout', 'defaultValue': false});
+      expect(calls[2].arguments, {'key': 'beta', 'defaultValue': true});
+      expect(calls[3].arguments, {'key': 'limit'});
+    });
+
+    test('yerel sonuç yoksa varsayılanlar döner', () async {
+      expect(await Pushizo.FeatureFlags.refresh(), isFalse);
+      expect(await Pushizo.FeatureFlags.isEnabled('x'), isFalse);
+      expect(await Pushizo.FeatureFlags.isEnabled('x', defaultValue: true), isTrue);
+      expect(await Pushizo.FeatureFlags.getValue('x', defaultValue: 7), 7);
+    });
+
+    test('yerel köprüler: Android ve iOS SDK çağrıları ve JSON taşıma', () {
+      String read(String path) => File(path).readAsStringSync().replaceAll('\r\n', '\n');
+      final kt = read('android/src/main/kotlin/com/pushizo/pushizo_flutter/PushizoFlutterPlugin.kt');
+      expect(kt, contains('"featureFlagsRefresh" -> Pushizo.FeatureFlags.refresh { ok -> main.post { result.success(ok) } }'));
+      expect(kt, contains('Pushizo.FeatureFlags.isEnabled(call.argument<String>("key").orEmpty(), call.argument<Boolean>("defaultValue") ?: false)'));
+      expect(kt, contains('Pushizo.FeatureFlags.getValue(call.argument<String>("key").orEmpty())?.let { JSONObject().put("value", it).toString() }'));
+      final swift = read('ios/Classes/PushizoFlutterPlugin.swift');
+      expect(swift, contains('Task { let ok = await Pushizo.FeatureFlags.refresh(); DispatchQueue.main.async { result(ok) } }'));
+      expect(swift, contains('Pushizo.FeatureFlags.isEnabled(args["key"] as? String ?? "", default: args["defaultValue"] as? Bool ?? false)'));
+      expect(swift, contains('Self.flagValueJson(Pushizo.FeatureFlags.value(args["key"] as? String ?? ""))'));
+      expect(swift, contains('let wrapped: [String: Any] = ["value": value]'));
+    });
+  });
+
+  group('Yerleşimler', () {
+    Map<String, Object?> message(String id, {String? variant}) => {
+          'id': id,
+          'priority': 1,
+          'variant_id': ?variant,
+          'display': {
+            'layout': 'banner_top',
+            'blocks': [
+              {'type': 'title', 'text': 'Kampanya'},
+              {'type': 'button', 'id': 'go', 'text': 'İncele', 'action': {'type': 'url', 'url': 'https://pushizo.com'}},
+            ],
+          },
+        };
+
+    test('list anahtar ve limit ile platforma gider; JSON mesajlar modele çözülür', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        if (call.method != 'placementsList') return null;
+        return [jsonEncode(message('m1', variant: 'var_b')), jsonEncode(message('m2'))];
+      });
+      final messages = await Pushizo.Placements.list('home_top', limit: 2);
+      expect(calls.single.arguments, {'key': 'home_top', 'limit': 2});
+      expect(messages.map((m) => m.id).toList(), ['m1', 'm2']);
+      expect(messages.first.variantId, 'var_b');
+      expect(messages.first.layout, PushizoInAppLayout.bannerTop);
+      expect(messages.first.buttons.single.id, 'go');
+      expect(messages.first.buttons.single.action.url, 'https://pushizo.com');
+
+      await Pushizo.Placements.reportImpression(messages.first);
+      await Pushizo.Placements.reportClick(messages.first, 'go');
+      await Pushizo.Placements.reportDismiss(messages[1]);
+      expect(calls.map((c) => c.method).toList(), [
+        'placementsList', 'placementsReportImpression', 'placementsReportClick', 'placementsReportDismiss',
+      ]);
+      expect(calls[1].arguments, {'messageId': 'm1'});
+      expect(calls[2].arguments, {'messageId': 'm1', 'buttonId': 'go'});
+      expect(calls[3].arguments, {'messageId': 'm2'});
+    });
+
+    test('varsayılan limit 1; yerel sonuç yoksa boş liste', () async {
+      expect(await Pushizo.Placements.list('home_top'), isEmpty);
+      expect(calls.single.arguments, {'key': 'home_top', 'limit': 1});
+    });
+
+    test('geçersiz anahtar ve limit platforma gitmeden ArgumentError fırlatır', () async {
+      for (final key in ['', 'Home', '1abc', 'a' * 65, 'home top', 'home/top']) {
+        await expectLater(Pushizo.Placements.list(key), throwsArgumentError, reason: key);
+      }
+      await expectLater(Pushizo.Placements.list('home_top', limit: 0), throwsArgumentError);
+      await expectLater(Pushizo.Placements.list('home_top', limit: 11), throwsArgumentError);
+      expect(calls, isEmpty);
+      await Pushizo.Placements.list('a');
+      await Pushizo.Placements.list('a.b-c_d9', limit: 10);
+      expect(calls, hasLength(2));
+    });
+
+    test('yerel hata PlatformException olarak iletilir', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        throw PlatformException(code: 'HS_FORBIDDEN', message: 'Yasak');
+      });
+      await expectLater(
+        Pushizo.Placements.list('home_top'),
+        throwsA(isA<PlatformException>().having((e) => e.code, 'code', 'HS_FORBIDDEN')),
+      );
+    });
+
+    test('yerel köprüler: SDK çağrıları, kimliğe göre sınırlı önbellek ve bulunamayan mesajın yok sayılması', () {
+      String read(String path) => File(path).readAsStringSync().replaceAll('\r\n', '\n');
+      final kt = read('android/src/main/kotlin/com/pushizo/pushizo_flutter/PushizoFlutterPlugin.kt');
+      expect(kt, contains('"placementsList" -> Pushizo.Placements.list(call.argument<String>("key").orEmpty(), call.argument<Int>("limit") ?: 1) { messages ->'));
+      expect(kt, contains('rememberPlacementMessages(messages)\n                        result.success(messages.map { it.toJson() })'));
+      expect(kt, contains('placementMessage(call)?.let { Pushizo.Placements.reportImpression(it) }'));
+      expect(kt, contains('placementMessage(call)?.let { Pushizo.Placements.reportClick(it, call.argument<String>("buttonId").orEmpty()) }'));
+      expect(kt, contains('placementMessage(call)?.let { Pushizo.Placements.reportDismiss(it) }'));
+      expect(kt, contains('const val MAX_PLACEMENT_MESSAGES = 50'));
+      expect(kt, contains('while (placementMessages.size > MAX_PLACEMENT_MESSAGES) placementMessages.remove(placementMessages.keys.first())'));
+      expect(kt, contains('return placementMessages[id] ?: run { HsLog.d('));
+      final swift = read('ios/Classes/PushizoFlutterPlugin.swift');
+      expect(swift, contains('let messages = try await Pushizo.Placements.list(key, limit: limit)'));
+      expect(swift, contains('await MainActor.run { self.rememberPlacementMessages(messages) }'));
+      expect(swift, contains('return messages.compactMap { Self.json(\$0) }'));
+      expect(swift, contains('if let message = placementMessage(args) { Pushizo.Placements.reportImpression(message) }'));
+      expect(swift, contains('if let message = placementMessage(args) { Pushizo.Placements.reportClick(message, buttonId: args["buttonId"] as? String ?? "") }'));
+      expect(swift, contains('if let message = placementMessage(args) { Pushizo.Placements.reportDismiss(message) }'));
+      expect(swift, contains('private static let maxPlacementMessages = 50'));
+      // Yerel SDK'nın geçersiz anahtar/limit hatası INVALID_ARGUMENT olarak döner.
+      expect(swift, contains('} catch HSError.invalidArgument(let message) {\n                DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGUMENT"'));
+    });
+  });
+
   test('alias çağrıları platforma iletilir', () async {
     await Pushizo.User.addAlias('crm_id', '42');
     await Pushizo.User.addAliases({'shop_id': '7', 'erp_id': 'x'});
@@ -352,5 +530,433 @@ void main() {
     expect(click.notification.deliveryId, 'dlv_1');
     expect(click.notification.data, {'k': 'v'});
     expect(click.url, 'https://x');
+  });
+
+  group('Android teslimat güçlendirme (ADR-0092)', () {
+    void mock(Object? Function(MethodCall call) reply) {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return reply(call);
+      });
+    }
+
+    test('status yerel durumu modele çevirir', () async {
+      mock((call) => {
+            'supported': true,
+            'manufacturer': 'xiaomi',
+            'brand': 'redmi',
+            'vendor': 'xiaomi',
+            'aggressiveVendor': true,
+            'rom': 'hyperos',
+            'romVersion': '1.0.2.0',
+            'notificationsEnabled': true,
+            'channelBlocked': false,
+            'batteryOptimizationExempt': false,
+            'backgroundRestricted': false,
+            'standbyBucket': 'rare',
+            'powerSaveMode': true,
+            'dataSaverEnabled': false,
+            'restricted': true,
+            'risk': 'elevated',
+            'recommendedSettings': ['auto_start', 'battery_optimization', 'gelecek_ekran'],
+          });
+      final status = await Pushizo.Delivery.status();
+      expect(calls.single.method, 'deliveryStatus');
+      expect(status.supported, isTrue);
+      expect(status.manufacturer, 'xiaomi');
+      expect(status.brand, 'redmi');
+      expect(status.vendor, 'xiaomi');
+      expect(status.aggressiveVendor, isTrue);
+      expect(status.rom, 'hyperos');
+      expect(status.romVersion, '1.0.2.0');
+      expect(status.notificationsEnabled, isTrue);
+      expect(status.batteryOptimizationExempt, isFalse);
+      expect(status.standbyBucket, 'rare');
+      expect(status.powerSaveMode, isTrue);
+      expect(status.restricted, isTrue);
+      expect(status.risk, PushizoDeliveryRisk.elevated);
+      // Bu sürümün tanımadığı ekran atlanır.
+      expect(status.recommendedSettings, [PushizoDeliverySetting.autoStart, PushizoDeliverySetting.batteryOptimization]);
+    });
+
+    test('yerel durum yoksa (iOS, web, başlatılmamış SDK) desteklenmiyor ve risk yok', () async {
+      mock((call) => null);
+      final status = await Pushizo.Delivery.status();
+      expect(status.supported, isFalse);
+      expect(status.risk, PushizoDeliveryRisk.none);
+      expect(status.restricted, isFalse);
+      expect(status.recommendedSettings, isEmpty);
+      expect(status.vendor, 'other');
+      expect(identical(status, PushizoDeliveryStatus.unsupported), isTrue);
+      // Platform `false` yerine boş yanıt verse de çağrılar `false` döner.
+      expect(await Pushizo.Delivery.shouldShowGuidance(), isFalse);
+      expect(await Pushizo.Delivery.openSettings(), isFalse);
+      expect(await Pushizo.Delivery.showGuidance(), isFalse);
+    });
+
+    test('openSettings, showGuidance ve shouldShowGuidance argümanları kanal değerleriyle iletilir', () async {
+      mock((call) => true);
+      expect(await Pushizo.Delivery.shouldShowGuidance(), isTrue);
+      expect(await Pushizo.Delivery.shouldShowGuidance(minIntervalDays: 30), isTrue);
+      expect(await Pushizo.Delivery.openSettings(), isTrue);
+      expect(await Pushizo.Delivery.openSettings(setting: PushizoDeliverySetting.autoStart), isTrue);
+      expect(await Pushizo.Delivery.showGuidance(), isTrue);
+      expect(
+        await Pushizo.Delivery.showGuidance(setting: PushizoDeliverySetting.batteryOptimization, message: 'Bildirimleri kaçırmayın'),
+        isTrue,
+      );
+      expect(calls.map((c) => c.method).toList(), [
+        'deliveryShouldShowGuidance',
+        'deliveryShouldShowGuidance',
+        'deliveryOpenSettings',
+        'deliveryOpenSettings',
+        'deliveryShowGuidance',
+        'deliveryShowGuidance',
+      ]);
+      expect(calls[0].arguments, {'minIntervalDays': null});
+      expect(calls[1].arguments, {'minIntervalDays': 30});
+      expect(calls[2].arguments, {'setting': 'auto'});
+      expect(calls[3].arguments, {'setting': 'auto_start'});
+      expect(calls[4].arguments, {'setting': 'auto', 'message': null});
+      expect(calls[5].arguments, {'setting': 'battery_optimization', 'message': 'Bildirimleri kaçırmayın'});
+    });
+
+    test('ayar ekranı kanal değerleri yerel HsDeliverySetting adlarıyla eşleşir', () {
+      expect(PushizoDeliverySetting.values.map((s) => s.wire).toList(),
+          ['auto', 'notifications', 'auto_start', 'battery_optimization', 'app_details']);
+    });
+  });
+
+  group('Yerel API eşitliği', () {
+    void respond(Object? Function(MethodCall call) reply) {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return reply(call);
+      });
+    }
+
+    String read(String path) => File(path).readAsStringSync().replaceAll('\r\n', '\n');
+
+    test('profille login: profil alanları yalnızca verildiğinde iletilir', () async {
+      await Pushizo.login(
+        'u1',
+        jwt: 'tok',
+        profile: const PushizoUserProfile(email: 'ali@pushizo.com', sms: '+905321234567', tags: {'plan': 'pro'}, aliases: {'crm_id': '42'}),
+      );
+      await Pushizo.login('u2', profile: const PushizoUserProfile(email: 'a@b.co'));
+      await Pushizo.login('u3');
+      expect(calls[0].arguments, {
+        'externalId': 'u1',
+        'identityHash': null,
+        'jwt': 'tok',
+        'profile': {'email': 'ali@pushizo.com', 'sms': '+905321234567', 'tags': {'plan': 'pro'}, 'aliases': {'crm_id': '42'}},
+      });
+      expect(calls[1].arguments, {'externalId': 'u2', 'identityHash': null, 'profile': {'email': 'a@b.co'}});
+      expect(calls[2].arguments, {'externalId': 'u3', 'identityHash': null});
+    });
+
+    test('isInitialized, emails, smsNumbers ve registerAdm', () async {
+      respond((call) => switch (call.method) {
+            'isInitialized' => true,
+            'getEmails' => ['ali@pushizo.com'],
+            'getSmsNumbers' => ['+905321234567'],
+            _ => null,
+          });
+      expect(await Pushizo.isInitialized, isTrue);
+      expect(await Pushizo.User.emails, ['ali@pushizo.com']);
+      expect(await Pushizo.User.smsNumbers, ['+905321234567']);
+      await Pushizo.User.registerAdm('amzn1.adm-registration.v3.X');
+      expect(calls.map((c) => c.method).toList(), ['isInitialized', 'getEmails', 'getSmsNumbers', 'registerAdm']);
+      expect(calls.last.arguments, {'token': 'amzn1.adm-registration.v3.X'});
+    });
+
+    test('yerel sonuç yoksa güvenli varsayılanlar döner', () async {
+      expect(await Pushizo.isInitialized, isFalse);
+      expect(await Pushizo.User.emails, isEmpty);
+      expect(await Pushizo.User.smsNumbers, isEmpty);
+      expect(await Pushizo.User.getConsents(), isEmpty);
+      expect(await Pushizo.Location.permissionGranted, isFalse);
+      expect(await Pushizo.Location.backgroundPermissionGranted, isFalse);
+      expect(await Pushizo.Location.requestBackgroundPermission(), isFalse);
+      expect(await Pushizo.Location.requestAlwaysPermission(), isFalse);
+      expect(await Pushizo.Chat.isListening, isFalse);
+    });
+
+    test('reklam rızası, rıza kayıtları ve reklam kimliği', () async {
+      respond((call) => switch (call.method) {
+            'setAdsPersonalizationConsent' => {
+                'data': [
+                  {'category': 'promos', 'channel': null, 'optedIn': true, 'explicit': true, 'source': 'sdk', 'updatedAt': 1700000000000},
+                ],
+                'categories': <Object?>[],
+              },
+            'getConsents' => [
+                {'purpose': 'ads_personalization', 'granted': true, 'source': 'sdk', 'updatedAt': 1700000000000},
+                {'purpose': 'other', 'granted': false, 'source': null, 'updatedAt': null},
+              ],
+            _ => null,
+          });
+      final prefs = await Pushizo.User.setAdsPersonalizationConsent(true);
+      expect(prefs.preferences.single.category, 'promos');
+      final consents = await Pushizo.User.getConsents();
+      expect(consents.map((c) => '${c.purpose}/${c.granted}/${c.source}'), ['ads_personalization/true/sdk', 'other/false/null']);
+      expect(consents.first.updatedAt, DateTime.fromMillisecondsSinceEpoch(1700000000000, isUtc: true));
+      expect(consents.last.updatedAt, isNull);
+      await Pushizo.Ads.setAdvertisingId('38400000-8cf0-11bd-b23e-10b96e40000d');
+      await Pushizo.Ads.setAdvertisingId(null);
+      expect(calls.map((c) => c.method).toList(), ['setAdsPersonalizationConsent', 'getConsents', 'setAdvertisingId', 'setAdvertisingId']);
+      expect(calls[0].arguments, {'granted': true});
+      expect(calls[2].arguments, {'id': '38400000-8cf0-11bd-b23e-10b96e40000d'});
+      expect(calls[3].arguments, {'id': null});
+    });
+
+    test('rozet: setBadgeCount ve clearBadge; negatif değer platforma gitmeden reddedilir', () async {
+      // Yerel sonuç yoksa (eski yerel taraf) false.
+      expect(await Pushizo.Notifications.setBadgeCount(3), isFalse);
+      expect(await Pushizo.Notifications.clearBadge(), isFalse);
+      expect(await Pushizo.Notifications.badgeCount, 0);
+      await expectLater(Pushizo.Notifications.setBadgeCount(-1), throwsArgumentError);
+      expect(calls.map((c) => c.method).toList(), ['setBadgeCount', 'setBadgeCount', 'getBadgeCount']);
+      expect(calls[0].arguments, {'count': 3});
+      expect(calls[1].arguments, {'count': 0});
+      // Yerel sonuç: rozet gösterilebiliyor mu ve saklanan sayı.
+      respond((call) => switch (call.method) { 'setBadgeCount' => true, 'getBadgeCount' => 3, _ => null });
+      expect(await Pushizo.Notifications.setBadgeCount(3), isTrue);
+      expect(await Pushizo.Notifications.clearBadge(), isTrue);
+      expect(await Pushizo.Notifications.badgeCount, 3);
+      // Dönüş tipi genişletmesi eski `Future<void>` kullanımını kırmaz.
+      final Future<void> legacy = Pushizo.Notifications.setBadgeCount(1);
+      await legacy;
+    });
+
+    test('konum izni durumu ve arka plan izni isteği; sohbet akışı durumu', () async {
+      respond((call) => switch (call.method) {
+            'getLocationPermissionGranted' || 'getLocationBackgroundPermissionGranted' => true,
+            'requestLocationBackgroundPermission' => true,
+            'chatIsListening' => true,
+            _ => null,
+          });
+      expect(await Pushizo.Location.permissionGranted, isTrue);
+      expect(await Pushizo.Location.backgroundPermissionGranted, isTrue);
+      expect(await Pushizo.Location.requestBackgroundPermission(rationale: 'Mağazaya yaklaşınca haber veririz'), isTrue);
+      expect(await Pushizo.Location.requestAlwaysPermission(), isTrue);
+      expect(await Pushizo.Chat.isListening, isTrue);
+      expect(calls.map((c) => c.method).toList(), [
+        'getLocationPermissionGranted',
+        'getLocationBackgroundPermissionGranted',
+        'requestLocationBackgroundPermission',
+        'requestLocationBackgroundPermission',
+        'chatIsListening',
+      ]);
+      expect(calls[2].arguments, {'rationale': 'Mağazaya yaklaşınca haber veririz'});
+      expect(calls[3].arguments, {'rationale': null});
+    });
+
+    test('yerel köprü Android: yerel SDK çağrıları, yerel rozet ve arka plan izni akışı', () {
+      final kt = read('android/src/main/kotlin/com/pushizo/pushizo_flutter/PushizoFlutterPlugin.kt');
+      expect(kt, contains('"isInitialized" -> result.success(Pushizo.isInitialized)'));
+      expect(kt, contains('else Pushizo.login(externalId, userProfile(profile), call.argument<String>("identityHash"), call.argument<String>("jwt"))'));
+      expect(kt, contains('HsUserProfile(\n        email = map["email"] as? String,\n        sms = map["sms"] as? String,'));
+      expect(kt, contains('"getEmails" -> result.success(Pushizo.User.emails)'));
+      expect(kt, contains('"getSmsNumbers" -> result.success(Pushizo.User.smsNumbers)'));
+      expect(kt, contains('"registerAdm" -> { Pushizo.User.registerAdm(call.argument<String>("token").orEmpty()); result.success(null) }'));
+      expect(kt, contains('Pushizo.User.setAdsPersonalizationConsent(call.argument<Boolean>("granted") ?: false, reply(result) { it.toMap() })'));
+      expect(kt, contains('Pushizo.User.getConsents(reply<List<HsConsent>>(result) { list -> list.map { it.toMap() } })'));
+      expect(kt, contains('"setAdvertisingId" -> { Pushizo.Ads.setAdvertisingId(call.argument<String>("id")); result.success(null) }'));
+      expect(kt, contains('"setBadgeCount" -> result.success(Pushizo.Notifications.setBadgeCount(call.argument<Number>("count")?.toInt() ?: 0))'));
+      expect(kt, contains('"getBadgeCount" -> result.success(Pushizo.Notifications.badgeCount)'));
+      expect(kt, contains('"getLocationPermissionGranted" -> result.success(Pushizo.Location.permissionGranted)'));
+      expect(kt, contains('"getLocationBackgroundPermissionGranted" -> result.success(Pushizo.Location.backgroundPermissionGranted)'));
+      expect(kt, contains('"chatIsListening" -> result.success(Pushizo.Chat.isListening)'));
+      // Arka plan izni: verilmişse true; Android 10 öncesi normal akış; manifest'te yoksa false; diyalog ve sistem izni.
+      expect(kt, contains('if (Pushizo.Location.backgroundPermissionGranted) {\n            Pushizo.Location.onPermissionResult()\n            result.success(true)'));
+      expect(kt, contains('if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {\n            requestLocationPermission(rationale, result)'));
+      expect(kt, contains('if (Manifest.permission.ACCESS_BACKGROUND_LOCATION !in requestedPermissions(act)) {'));
+      expect(kt, contains('com.pushizo.sdk.R.string.hs_geofence_rationale_title'));
+      expect(kt, contains('rationale?.takeIf { it.isNotBlank() } ?: act.getString(com.pushizo.sdk.R.string.hs_geofence_rationale_message)'));
+      expect(kt, contains('act.requestPermissions(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), Pushizo.Location.PERMISSION_REQUEST_CODE)'));
+      expect(kt, contains('pendingLocationPermission?.success(Pushizo.Location.backgroundPermissionGranted)'));
+    });
+
+    test('yerel köprü iOS: yerel SDK çağrıları, yerel profil girişi ve yerel konum izni durumu', () {
+      final swift = read('ios/Classes/PushizoFlutterPlugin.swift');
+      expect(swift, contains('case "isInitialized": result(Pushizo.isInitialized)'));
+      // Profil: kanıt denetimi önce (HS_ERROR), sonra yerel `login(_:profile:)`; doğrulama ve alanların yazılması yerel
+      // SDK'dadır, köprü kendi e-posta/SMS/tag/alias çağrılarını yapmaz.
+      final proof = swift.indexOf('if let message = Pushizo.loginProofError(identityHash: identityHash, jwt: jwt) {');
+      final plain = swift.indexOf('Pushizo.login(externalId, identityHash: identityHash, jwt: jwt)');
+      final native = swift.indexOf('try Pushizo.login(externalId, profile: Self.userProfile(profile), identityHash: identityHash, jwt: jwt)');
+      expect(proof, greaterThan(0));
+      expect(plain, greaterThan(proof));
+      expect(native, greaterThan(plain));
+      expect(swift, contains('} catch HSError.invalidArgument(let message) {\n                result(FlutterError(code: "INVALID_ARGUMENT", message: message, details: nil))\n            } catch HSError.notInitialized {'));
+      expect(swift, contains('HSUserProfile(email: map["email"] as? String, sms: map["sms"] as? String,'));
+      expect(swift, contains('tags: map["tags"] as? [String: String] ?? [:], aliases: map["aliases"] as? [String: String] ?? [:])'));
+      expect(swift, isNot(contains('if let email { Pushizo.User.addEmail(email) }')));
+      expect(swift, isNot(contains('Pushizo.User.addTags(tags)')));
+      expect(swift, contains('case "getEmails": result(Pushizo.User.emails)'));
+      expect(swift, contains('case "getSmsNumbers": result(Pushizo.User.smsNumbers)'));
+      expect(swift, contains('case "registerAdm": result(nil)'));
+      expect(swift, contains('Self.map(try await Pushizo.User.setAdsPersonalizationConsent(granted))'));
+      expect(swift, contains(r'try await Pushizo.User.getConsents().map { Self.map($0) }'));
+      expect(swift, contains('case "setAdvertisingId": Pushizo.Ads.setAdvertisingId(args["id"] as? String); result(nil)'));
+      expect(swift, contains('Pushizo.Notifications.setBadgeCount(max(0, (args["count"] as? NSNumber)?.intValue ?? 0)); result(true)'));
+      expect(swift, contains('case "getBadgeCount": result(UIApplication.shared.applicationIconBadgeNumber)'));
+      expect(swift, contains('case "getLocationPermissionGranted": result(Pushizo.Location.permissionGranted)'));
+      expect(swift, contains('case "getLocationBackgroundPermissionGranted": result(Pushizo.Location.backgroundPermissionGranted)'));
+      expect(swift, isNot(contains('CLLocationManager')));
+      expect(swift, isNot(contains('import CoreLocation')));
+      expect(swift, contains('Pushizo.Location.requestAlwaysPermission { granted in result(granted) }'));
+      expect(swift, contains('case "chatIsListening": result(Pushizo.Chat.isListening)'));
+    });
+  });
+
+  group('Yerel API eşitliği (tur 3)', () {
+    void respond(Object? Function(MethodCall call) reply) {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return reply(call);
+      });
+    }
+
+    String read(String path) => File(path).readAsStringSync().replaceAll('\r\n', '\n');
+
+    test('User.setProperty: değer türüyle iletilir, null siler; geçersiz girdi platforma gitmez', () async {
+      await Pushizo.User.setProperty('first_name', 'Ali');
+      await Pushizo.User.setProperty(' level ', 7);
+      await Pushizo.User.setProperty('vip', true);
+      await Pushizo.User.setProperty('prefs', {'dark': true, 'tags': ['a', 2.5]});
+      await Pushizo.User.setProperty('first_name', null);
+      expect(calls.map((c) => c.method).toSet(), {'setProperty'});
+      expect(calls.map((c) => c.arguments).toList(), [
+        {'key': 'first_name', 'value': 'Ali'},
+        {'key': 'level', 'value': 7},
+        {'key': 'vip', 'value': true},
+        {'key': 'prefs', 'value': {'dark': true, 'tags': ['a', 2.5]}},
+        {'key': 'first_name', 'value': null},
+      ]);
+      expect(() => Pushizo.User.setProperty('', 'x'), throwsArgumentError);
+      expect(() => Pushizo.User.setProperty('   ', 'x'), throwsArgumentError);
+      expect(() => Pushizo.User.setProperty('k' * 65, 'x'), throwsArgumentError);
+      expect(() => Pushizo.User.setProperty('when', DateTime(2026)), throwsArgumentError);
+      expect(() => Pushizo.User.setProperty('ratio', double.nan), throwsArgumentError);
+      expect(() => Pushizo.User.setProperty('list', [1, null]), throwsArgumentError);
+      expect(() => Pushizo.User.setProperty('map', {1: 'a'}), throwsArgumentError);
+      expect(calls, hasLength(5));
+    });
+
+    test('Session.sendEvent: eventId yalnızca verildiğinde iletilir', () async {
+      await Pushizo.Session.sendEvent('purchase', properties: {'sku': 'A1'}, value: 49.9, eventId: 'order-1042');
+      await Pushizo.Session.sendEvent('viewed');
+      expect(calls[0].arguments, {'name': 'purchase', 'properties': {'sku': 'A1'}, 'value': 49.9, 'eventId': 'order-1042'});
+      expect(calls[1].arguments, {'name': 'viewed', 'properties': <String, Object?>{}, 'value': null});
+    });
+
+    test('FeatureFlags ve Inbox gözlemcileri: akış, ekleme (tekil) ve kaldırma', () async {
+      // Olay akışı ilk erişimde bir kez açılır ve tıklama dağıtıcısı yüzünden açık kalır; bu yüzden olaylar akışı hangi
+      // testin açtığından bağımsız olarak doğrudan platform mesajıyla gönderilir.
+      final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockStreamHandler(
+        const EventChannel('pushizo_flutter/events'),
+        MockStreamHandler.inline(onListen: (arguments, events) {}),
+      );
+      void emit(Map<String, Object?> event) {
+        messenger.handlePlatformMessage('pushizo_flutter/events', const StandardMethodCodec().encodeSuccessEnvelope(event), (_) {});
+      }
+
+      var flagChanges = 0;
+      var flagStream = 0;
+      final inbox = <PushizoInboxChangeEvent>[];
+      final inboxStream = <String>[];
+      void flagObserver() => flagChanges++;
+      void inboxObserver(PushizoInboxChangeEvent event) => inbox.add(event);
+      final flagSubscription = Pushizo.FeatureFlags.changes.listen((_) => flagStream++);
+      final inboxSubscription = Pushizo.Inbox.changes.listen((e) => inboxStream.add(e.type));
+      Pushizo.FeatureFlags.addObserver(flagObserver);
+      Pushizo.FeatureFlags.addObserver(flagObserver);
+      Pushizo.Inbox.addObserver(inboxObserver);
+      Pushizo.Inbox.addObserver(inboxObserver);
+      await pumpEventQueue();
+
+      emit({'type': 'featureFlags'});
+      emit({'type': 'inboxChange', 'event': 'read', 'itemId': 'i1', 'unreadCount': 2});
+      emit({'type': 'inboxChange', 'event': 'read_all', 'itemId': null, 'unreadCount': 0});
+      emit({'type': 'permission', 'permission': true});
+      await pumpEventQueue();
+      expect(flagChanges, 1, reason: 'aynı gözlemci bir kez eklenir');
+      expect(flagStream, 1);
+      expect(inbox.map((e) => '${e.type}/${e.itemId}/${e.unreadCount}').toList(), ['read/i1/2', 'read_all/null/0']);
+      expect(inbox.first.type, PushizoInboxChangeEvent.read);
+      expect(inbox.last.type, PushizoInboxChangeEvent.readAll);
+      expect(inboxStream, ['read', 'read_all']);
+
+      Pushizo.FeatureFlags.removeObserver(flagObserver);
+      Pushizo.Inbox.removeObserver(inboxObserver);
+      emit({'type': 'featureFlags'});
+      emit({'type': 'inboxChange', 'event': 'count', 'unreadCount': 5});
+      await pumpEventQueue();
+      expect(flagChanges, 1);
+      expect(inbox, hasLength(2));
+      expect(flagStream, 2);
+      expect(inboxStream, ['read', 'read_all', 'count']);
+      await flagSubscription.cancel();
+      await inboxSubscription.cancel();
+    });
+
+    test('kutu değişim olayı haritadan oluşur; eksik alanlar güvenli varsayılan alır', () {
+      final event = PushizoInboxChangeEvent.fromMap({'type': 'inboxChange', 'event': 'archived', 'itemId': 'i9', 'unreadCount': 3.0});
+      expect('${event.type}/${event.itemId}/${event.unreadCount}', 'archived/i9/3');
+      expect(event.type, PushizoInboxChangeEvent.archived);
+      final empty = PushizoInboxChangeEvent.fromMap(const {});
+      expect('${empty.type}/${empty.itemId}/${empty.unreadCount}', '/null/0');
+      expect([PushizoInboxChangeEvent.listed, PushizoInboxChangeEvent.count], ['listed', 'count']);
+    });
+
+    test('Chat.show, hide ve isPresented platforma iletilir; yerel sonuç yoksa false', () async {
+      await Pushizo.Chat.show();
+      expect(await Pushizo.Chat.hide(), isFalse);
+      expect(await Pushizo.Chat.isPresented, isFalse);
+      expect(calls.map((c) => c.method).toList(), ['chatShow', 'chatHide', 'chatIsPresented']);
+      expect(calls.map((c) => c.arguments).toList(), [null, null, null]);
+      respond((call) => switch (call.method) { 'chatHide' || 'chatIsPresented' => true, _ => null });
+      expect(await Pushizo.Chat.isPresented, isTrue);
+      expect(await Pushizo.Chat.hide(), isTrue);
+    });
+
+    test('yerel köprü Android: tur 3 yerel SDK çağrıları', () {
+      final kt = read('android/src/main/kotlin/com/pushizo/pushizo_flutter/PushizoFlutterPlugin.kt');
+      expect(kt, contains('"setProperty" -> { Pushizo.User.setProperty(call.argument<String>("key").orEmpty(), call.argument<Any?>("value")); result.success(null) }'));
+      // eventId verilmediyse eski aşırı yükleme, verildiyse eventId'li aşırı yükleme.
+      expect(kt, contains('if (eventId == null) Pushizo.Session.sendEvent(name, properties, value)\n                    else Pushizo.Session.sendEvent(name, properties, value, eventId)'));
+      // Gözlemciler: initialize'da eklenir, motor ayrılınca kaldırılır.
+      expect(kt, contains('private val featureFlagObserver = HsFeatureFlagObserver { emit(mapOf("type" to "featureFlags")) }'));
+      expect(kt, contains('emit(mapOf("type" to "inboxChange", "event" to e.type, "itemId" to e.itemId, "unreadCount" to e.unreadCount))'));
+      expect(kt, contains('Pushizo.FeatureFlags.addObserver(featureFlagObserver)\n                    Pushizo.Inbox.addObserver(inboxObserver)'));
+      expect(kt, contains('Pushizo.FeatureFlags.removeObserver(featureFlagObserver)\n        Pushizo.Inbox.removeObserver(inboxObserver)'));
+      // Hazır sohbet ekranı: Activity bağlamı tercih edilir; açık mı bilgisi Activity yaşam döngüsünden izlenir.
+      expect(kt, contains('"chatShow" -> { (activity ?: context)?.let { Pushizo.Chat.show(it) }; result.success(null) }'));
+      expect(kt, contains('"chatHide" -> result.success(Pushizo.Chat.hide())'));
+      expect(kt, contains('"chatIsPresented" -> result.success(chatActivity?.get()?.let { !it.isFinishing && !it.isDestroyed } ?: false)'));
+      expect(kt, contains('if (activity is HsChatActivity) chatActivity = WeakReference(activity)'));
+      expect(kt, contains('if (chatActivity?.get() === activity) chatActivity = null'));
+      expect(kt, contains('(binding.applicationContext as? Application)?.registerActivityLifecycleCallbacks(chatLifecycle)'));
+      expect(kt, contains('(binding.applicationContext as? Application)?.unregisterActivityLifecycleCallbacks(chatLifecycle)'));
+    });
+
+    test('yerel köprü iOS: tur 3 yerel SDK çağrıları', () {
+      final swift = read('ios/Classes/PushizoFlutterPlugin.swift');
+      // null (NSNull) değer özelliği siler.
+      expect(swift, contains(r'let value = args["value"].flatMap { $0 is NSNull ? nil : $0 }'));
+      expect(swift, contains('Pushizo.User.setProperty(args["key"] as? String ?? "", value)'));
+      expect(swift, contains('value: (args["value"] as? NSNumber)?.doubleValue, eventId: args["eventId"] as? String)'));
+      expect(swift, contains('Pushizo.FeatureFlags.addObserver { [weak self] in\n                    self?.emit(["type": "featureFlags"])'));
+      expect(swift, contains('Pushizo.Inbox.addObserver { [weak self] event in'));
+      expect(swift, contains('self?.emit(["type": "inboxChange", "event": event.type.rawValue, "itemId": event.itemId as Any, "unreadCount": event.unreadCount])'));
+      // Gözlemciler diğer dinleyicilerle birlikte yalnızca bir kez eklenir.
+      expect(swift.indexOf('Pushizo.Inbox.addObserver'), greaterThan(swift.indexOf('if !listenersRegistered {')));
+      expect(swift, contains('case "chatShow": Pushizo.Chat.show(); result(nil)'));
+      expect(swift, contains('let presented = Pushizo.Chat.isPresented\n            Pushizo.Chat.hide()\n            result(presented)'));
+      expect(swift, contains('case "chatIsPresented": result(Pushizo.Chat.isPresented)'));
+    });
   });
 }

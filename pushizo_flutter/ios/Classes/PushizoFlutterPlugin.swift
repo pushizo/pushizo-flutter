@@ -24,6 +24,11 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
     private var foregroundEvents: [String: HSForegroundEvent] = [:]
     private var foregroundEventOrder: [String] = []
     private static let maxForegroundEvents = 32
+    /// Son `placementsList` çağrılarından dönen mesajlar (kimliğe göre); rapor çağrıları yerel SDK'ya bu nesnelerle yapılır.
+    /// Yalnızca ana kuyrukta erişilir.
+    private var placementMessages: [String: HSInAppMessage] = [:]
+    private var placementMessageOrder: [String] = []
+    private static let maxPlacementMessages = 50
 
     init(channel: FlutterMethodChannel) {
         self.channel = channel
@@ -79,6 +84,15 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
                 Pushizo.Chat.addOpenListener { [weak self] info in
                     self?.emitClick((["type": "chatOpen"] as [String: Any]).merging(info.dictionary) { current, _ in current })
                 }
+                // Yerel SDK bayrak gözlemcisi → Dart `Pushizo.FeatureFlags.changes` / `addObserver`.
+                Pushizo.FeatureFlags.addObserver { [weak self] in
+                    self?.emit(["type": "featureFlags"])
+                }
+                // Yerel SDK kutu gözlemcisi → Dart `Pushizo.Inbox.changes` / `addObserver`. Olay türü `event` alanında
+                // taşınır; `type` kanal olay adına ayrılmıştır.
+                Pushizo.Inbox.addObserver { [weak self] event in
+                    self?.emit(["type": "inboxChange", "event": event.type.rawValue, "itemId": event.itemId as Any, "unreadCount": event.unreadCount])
+                }
             }
             result(nil)
         case "setConsentGiven": Pushizo.setConsentGiven(args["given"] as? Bool ?? false); result(nil)
@@ -89,7 +103,24 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
             if let message = Pushizo.loginProofError(identityHash: identityHash, jwt: jwt) {
                 result(FlutterError(code: "HS_ERROR", message: message, details: nil)); return
             }
-            Pushizo.login(args["externalId"] as? String ?? "", identityHash: identityHash, jwt: jwt); result(nil)
+            let externalId = args["externalId"] as? String ?? ""
+            guard let profile = args["profile"] as? [String: Any] else {
+                Pushizo.login(externalId, identityHash: identityHash, jwt: jwt)
+                result(nil); return
+            }
+            // Profil yerel SDK'da girişten önce doğrulanır (Android `HsUserProfile` ile aynı davranış): geçersiz
+            // e-posta/telefon/alias `INVALID_ARGUMENT` döner ve giriş yapılmaz; alanlar girişten sonra kuyruğa yazılır.
+            do {
+                try Pushizo.login(externalId, profile: Self.userProfile(profile), identityHash: identityHash, jwt: jwt)
+                result(nil)
+            } catch HSError.invalidArgument(let message) {
+                result(FlutterError(code: "INVALID_ARGUMENT", message: message, details: nil))
+            } catch HSError.notInitialized {
+                result(FlutterError(code: "HS_ERROR", message: "Pushizo.initialize önce çağrılmalı", details: nil))
+            } catch {
+                result(FlutterError(code: "HS_ERROR", message: "\(error)", details: nil))
+            }
+        case "isInitialized": result(Pushizo.isInitialized)
         case "updateUserJwt":
             do {
                 try Pushizo.updateUserJwt(args["jwt"] as? String ?? "")
@@ -111,7 +142,24 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
             if let id = args["eventId"] as? String { takeForegroundEvent(id)?.display() }
             result(nil)
         case "setLanguage": Pushizo.User.setLanguage(args["code"] as? String ?? "en"); result(nil)
+        // Kullanıcı özelliği: null değer özelliği siler; geçersiz girdi yerel SDK'da günlüğe yazılıp yok sayılır
+        // (anahtar ve değer türü Dart tarafında doğrulanır).
+        case "setProperty":
+            let value = args["value"].flatMap { $0 is NSNull ? nil : $0 }
+            Pushizo.User.setProperty(args["key"] as? String ?? "", value)
+            result(nil)
         case "getExternalId": result(Pushizo.User.externalId)
+        case "getEmails": result(Pushizo.User.emails)
+        case "getSmsNumbers": result(Pushizo.User.smsNumbers)
+        // ADM (Fire OS) yalnızca Android'dedir; iOS'ta etkisiz.
+        case "registerAdm": result(nil)
+        // Reklam kişiselleştirme rızası ve reklam kimliği (ADR-0037)
+        case "setAdsPersonalizationConsent":
+            let granted = args["granted"] as? Bool ?? false
+            inbox(result) { Self.map(try await Pushizo.User.setAdsPersonalizationConsent(granted)) }
+        case "getConsents":
+            inbox(result) { try await Pushizo.User.getConsents().map { Self.map($0) } }
+        case "setAdvertisingId": Pushizo.Ads.setAdvertisingId(args["id"] as? String); result(nil)
         case "getUserId": result(Pushizo.User.id)
         case "getSubscriptionState":
             Task { let s = await Pushizo.User.pushSubscription.state(); DispatchQueue.main.async { result(Self.map(s)) } }
@@ -125,6 +173,11 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
         // (`UNNotificationRequest.identifier`) tekil kaldırma. Yalnızca Android tepsi kimliği verildiyse iOS'ta karşılığı
         // olmadığından çağrı etkisiz tamamlanır.
         case "clearAll": Pushizo.Notifications.clearAll(); result(nil)
+        // Rozet: uygulama simgesi ve bildirim uzantısıyla paylaşılan sayaç (negatif değer sıfıra çekilir). iOS'ta rozet her
+        // zaman ayarlanabildiğinden sonuç `true` (Android ve web'de gösterilebilirlik bilgisi).
+        case "setBadgeCount": Pushizo.Notifications.setBadgeCount(max(0, (args["count"] as? NSNumber)?.intValue ?? 0)); result(true)
+        // Yerel SDK rozeti okutmaz; uygulama simgesindeki geçerli değer döner (bildirim uzantısının artırdıkları dahil).
+        case "getBadgeCount": result(UIApplication.shared.applicationIconBadgeNumber)
         case "removeGroupedNotifications": Pushizo.Notifications.removeGroupedNotifications(args["group"] as? String ?? ""); result(nil)
         case "removeNotification":
             if let identifier = args["identifier"] as? String, !identifier.isEmpty {
@@ -132,7 +185,9 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
             }
             result(nil)
         case "sendEvent":
-            Pushizo.Session.sendEvent(args["name"] as? String ?? "", properties: args["properties"] as? [String: Any] ?? [:], value: args["value"] as? Double)
+            // Tekilleştirme kimliği (ADR-0038): verilmezse ya da biçim geçersizse yerel SDK kendi kimliğini üretir.
+            Pushizo.Session.sendEvent(args["name"] as? String ?? "", properties: args["properties"] as? [String: Any] ?? [:],
+                                      value: (args["value"] as? NSNumber)?.doubleValue, eventId: args["eventId"] as? String)
             result(nil)
         case "setLogLevel": Pushizo.Debug.setLogLevel(Self.logLevel(args["level"] as? String)); result(nil)
         // E-posta / SMS: geçersiz adres Dart'a INVALID_ARGUMENT olarak döner.
@@ -171,6 +226,42 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
             inbox(result) { try await Pushizo.Inbox.archive(args["id"] as? String ?? ""); return nil }
         case "inboxUnreadCount":
             inbox(result) { try await Pushizo.Inbox.unreadCount() }
+        // İçerik kartları (ADR-0082)
+        case "contentCardsList":
+            inbox(result) { try await Self.map(Pushizo.ContentCards.list(limit: args["limit"] as? Int ?? 50)) }
+        case "contentCardEvent":
+            let id = args["id"] as? String ?? ""
+            switch args["event"] as? String {
+            case "impression": inbox(result) { Self.map(try await Pushizo.ContentCards.logImpression(id)) }
+            case "click": inbox(result) { Self.map(try await Pushizo.ContentCards.logClick(id)) }
+            case "dismiss": inbox(result) { Self.map(try await Pushizo.ContentCards.dismiss(id)) }
+            default: result(FlutterError(code: "PUSHIZO_INVALID_ARGUMENT", message: "Kart olayı impression, click veya dismiss olmalı.", details: nil))
+            }
+        // Gömülü yerleşimler (ADR-0068): mesajlar ham JSON olarak Dart'a gider; rapor çağrıları için kimliğe göre saklanır.
+        case "placementsList":
+            let key = args["key"] as? String ?? ""
+            let limit = args["limit"] as? Int ?? 1
+            inbox(result) {
+                let messages = try await Pushizo.Placements.list(key, limit: limit)
+                await MainActor.run { self.rememberPlacementMessages(messages) }
+                return messages.compactMap { Self.json($0) }
+            }
+        case "placementsReportImpression":
+            if let message = placementMessage(args) { Pushizo.Placements.reportImpression(message) }
+            result(nil)
+        case "placementsReportClick":
+            if let message = placementMessage(args) { Pushizo.Placements.reportClick(message, buttonId: args["buttonId"] as? String ?? "") }
+            result(nil)
+        case "placementsReportDismiss":
+            if let message = placementMessage(args) { Pushizo.Placements.reportDismiss(message) }
+            result(nil)
+        // Özellik bayrakları (ADR-0066): okuma yerel önbellekten; ham değer `{"value": …}` JSON metni olarak taşınır.
+        case "featureFlagsRefresh":
+            Task { let ok = await Pushizo.FeatureFlags.refresh(); DispatchQueue.main.async { result(ok) } }
+        case "featureFlagsIsEnabled":
+            result(Pushizo.FeatureFlags.isEnabled(args["key"] as? String ?? "", default: args["defaultValue"] as? Bool ?? false))
+        case "featureFlagsGetValue":
+            result(Self.flagValueJson(Pushizo.FeatureFlags.value(args["key"] as? String ?? "")))
         // Tercihler (ADR-0019 §4); kanıt ve istek yerel SDK'da
         case "getPreferences":
             inbox(result) { Self.map(try await Pushizo.User.getPreferences()) }
@@ -182,9 +273,21 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
         // Konum paylaşımı (v2 Faz 17b): açıklama uyarısı, When In Use izni ve gönderim kuralları yerel SDK'dadır.
         case "setLocationShared": Pushizo.Location.setShared(args["shared"] as? Bool ?? false); result(nil)
         case "getLocationShared": result(Pushizo.Location.isShared)
+        // Arka plan bölge izleme (ADR-0065): varsayılan kapalı; "her zaman" izni ve Info.plist girdisi uygulamanın sorumluluğundadır.
+        case "setGeofencingEnabled": Pushizo.Location.setGeofencingEnabled(args["enabled"] as? Bool ?? false); result(nil)
+        case "getGeofencingEnabled": result(Pushizo.Location.isGeofencingEnabled)
         case "requestLocationPermission":
             // Tamamlama ana iş parçacığında çağrılır; reddedilmiş/kısıtlı izin veya eksik Info.plist anahtarı → false.
             Pushizo.Location.requestPermission(rationale: args["rationale"] as? String) { granted in result(granted) }
+        // İzin durumu yerel SDK'dan okunur ("kullanırken" veya "her zaman" / yalnızca "her zaman"); istem açmaz.
+        case "getLocationPermissionGranted": result(Pushizo.Location.permissionGranted)
+        case "getLocationBackgroundPermissionGranted": result(Pushizo.Location.backgroundPermissionGranted)
+        // Arka plan konum izni iOS'ta "her zaman" iznidir (Android'deki açıklama metni kullanılmaz); sonuç ana iş parçacığında döner.
+        case "requestLocationBackgroundPermission":
+            Pushizo.Location.requestAlwaysPermission { granted in result(granted) }
+        // Android teslimat güçlendirme (ADR-0092) iOS'ta yoktur: durum yok (Dart `unsupported`), diğerleri etkisiz `false`.
+        case "deliveryStatus": result(nil)
+        case "deliveryShouldShowGuidance", "deliveryOpenSettings", "deliveryShowGuidance": result(false)
         // Canlı sohbet (ADR-0040): kimlik, kuyruk, akış ve push yerel SDK'dadır.
         case "chatStart":
             inbox(result) { try await Pushizo.Chat.start(name: args["name"] as? String, email: args["email"] as? String, language: args["language"] as? String).dictionary }
@@ -218,6 +321,14 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
         case "chatAttachmentUrl":
             inbox(result) { try Pushizo.Chat.attachmentUrl(args["attachmentId"] as? String ?? "", download: args["download"] as? Bool ?? false).absoluteString }
         case "chatGetVisitorId": result(Pushizo.Chat.visitorId)
+        case "chatIsListening": result(Pushizo.Chat.isListening)
+        // Hazır sohbet ekranı (HSChatViewController): etkin sahnenin en üstteki görünüm denetleyicisinden modal açılır.
+        case "chatShow": Pushizo.Chat.show(); result(nil)
+        case "chatHide":
+            let presented = Pushizo.Chat.isPresented
+            Pushizo.Chat.hide()
+            result(presented)
+        case "chatIsPresented": result(Pushizo.Chat.isPresented)
         // Live Activities (ADR-0024): genel `PushizoDefaultLiveActivityAttributes` türü; değer doğrulaması yerel SDK'dadır.
         case "setupDefaultLiveActivity":
             liveActivity(result) { try Pushizo.LiveActivities.setupDefaultLiveActivity() }
@@ -299,7 +410,7 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
 
     /// HTML içerikli mesajlar bu çizime gelmez: yerel SDK kendi yalıtılmış WKWebView'ında çizer (ADR-0027).
     public func show(_ message: HSInAppMessage, handle: HSInAppHandle) -> Bool {
-        guard let data = try? JSONSerialization.data(withJSONObject: message.raw), let json = String(data: data, encoding: .utf8) else { return false }
+        guard let json = Self.json(message) else { return false }
         inAppHandles[message.id] = handle
         channel.invokeMethod("inAppShow", arguments: ["json": json]) { [weak self] result in
             // Dart gösteremedi (navigator yok / başka mesaj açık): mesaj kapatılmış sayılır, gösterim kaydedilmez.
@@ -326,7 +437,44 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
         (args["messageId"] as? String).flatMap { inAppHandles[$0] }
     }
 
-    /// Bildirim kutusu çağrısı: sonuç ana iş parçacığında döner; hata kodu `HSApiError.code` / `NOT_READY`.
+    /// Mesajın sunucudaki ham JSON'u (Dart `PushizoInAppMessage.fromMap` girdisi).
+    private static func json(_ message: HSInAppMessage) -> String? {
+        guard let data = try? JSONSerialization.data(withJSONObject: message.raw) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    // MARK: Yerleşimler ve bayraklar
+
+    private func rememberPlacementMessages(_ messages: [HSInAppMessage]) {
+        for message in messages {
+            if placementMessages.updateValue(message, forKey: message.id) != nil {
+                placementMessageOrder.removeAll { $0 == message.id }
+            }
+            placementMessageOrder.append(message.id)
+        }
+        while placementMessageOrder.count > Self.maxPlacementMessages {
+            placementMessages.removeValue(forKey: placementMessageOrder.removeFirst())
+        }
+    }
+
+    /// Rapor çağrısının mesajı; önbellekte yoksa çağrı sessizce yok sayılır.
+    private func placementMessage(_ args: [String: Any]) -> HSInAppMessage? {
+        let id = args["messageId"] as? String ?? ""
+        if let message = placementMessages[id] { return message }
+        if HSLog.level.rawValue >= HSLog.Level.debug.rawValue { print("[Pushizo] yerleşim raporu yok sayıldı: mesaj listede yok (\(id))") }
+        return nil
+    }
+
+    /// Bayrak değeri `{"value": …}` JSON metni; değer yoksa veya JSON'a çevrilemiyorsa nil.
+    private static func flagValueJson(_ value: Any?) -> String? {
+        guard let value, !(value is NSNull) else { return nil }
+        let wrapped: [String: Any] = ["value": value]
+        guard JSONSerialization.isValidJSONObject(wrapped), let data = try? JSONSerialization.data(withJSONObject: wrapped) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Bildirim kutusu çağrısı: sonuç ana iş parçacığında döner; hata kodu `HSApiError.code`, geçersiz girdi `INVALID_ARGUMENT`,
+    /// diğerleri `NOT_READY`.
     private func inbox(_ result: @escaping FlutterResult, _ body: @escaping () async throws -> Any?) {
         Task {
             do {
@@ -335,6 +483,8 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
             } catch let error as HSApiError {
                 DispatchQueue.main.async { result(FlutterError(code: error.code, message: error.message, details: nil)) }
             } catch HSChatError.invalidArgument(let message) {
+                DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGUMENT", message: message, details: nil)) }
+            } catch HSError.invalidArgument(let message) {
                 DispatchQueue.main.async { result(FlutterError(code: "INVALID_ARGUMENT", message: message, details: nil)) }
             } catch {
                 DispatchQueue.main.async { result(FlutterError(code: "NOT_READY", message: "\(error)", details: nil)) }
@@ -366,12 +516,33 @@ public class PushizoFlutterPlugin: NSObject, FlutterPlugin, FlutterStreamHandler
         ["category": p.category, "channel": p.channel as Any, "optedIn": p.optedIn, "explicit": p.explicit, "source": p.source as Any, "updatedAt": millis(p.updatedAt)]
     }
 
+    private static func map(_ c: HSUserConsent) -> [String: Any] {
+        ["purpose": c.purpose, "granted": c.granted, "source": c.source as Any, "updatedAt": millis(c.updatedAt)]
+    }
+
+    /// Dart `PushizoUserProfile.toMap()` → yerel profil.
+    private static func userProfile(_ map: [String: Any]) -> HSUserProfile {
+        HSUserProfile(email: map["email"] as? String, sms: map["sms"] as? String,
+                      tags: map["tags"] as? [String: String] ?? [:], aliases: map["aliases"] as? [String: String] ?? [:])
+    }
+
     private static func map(_ c: HSMessageCategory) -> [String: Any] {
         ["key": c.key, "name": c.name, "description": c.description, "channels": c.channels as Any, "defaultOptedIn": c.defaultOptedIn]
     }
 
     private static func map(_ r: HSPreferencesResult) -> [String: Any] {
         ["data": r.preferences.map { map($0) }, "categories": r.categories.map { map($0) }]
+    }
+
+    private static func map(_ card: HSContentCard) -> [String: Any] {
+        ["id": card.id, "messageId": card.messageId as Any, "type": card.type.rawValue, "title": card.title as Any, "body": card.body as Any,
+         "url": card.url as Any, "imageUrl": card.imageUrl as Any, "buttonText": card.buttonText as Any, "data": card.data,
+         "pinned": card.pinned, "priority": card.priority, "viewed": card.viewed, "clicked": card.clicked,
+         "expiresAt": millis(card.expiresAt), "createdAt": millis(card.createdAt)]
+    }
+
+    private static func map(_ feed: HSContentCardFeed) -> [String: Any] {
+        ["cards": feed.cards.map { map($0) }, "unviewedCount": feed.unviewedCount]
     }
 
     private static func map(_ page: HSInboxPage) -> [String: Any] {

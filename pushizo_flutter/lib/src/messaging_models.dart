@@ -338,6 +338,91 @@ class PushizoInboxItem {
       );
 }
 
+/// İçerik kartı türü (ADR-0082). Bilinmeyen tür klasik sayılır.
+enum PushizoContentCardType {
+  classic,
+  captionedImage,
+  imageOnly;
+
+  static PushizoContentCardType fromWire(Object? value) => switch (value) {
+        'captioned_image' => PushizoContentCardType.captionedImage,
+        'image_only' => PushizoContentCardType.imageOnly,
+        _ => PushizoContentCardType.classic,
+      };
+}
+
+/// İçerik kartı (ADR-0082). Akış sabitlenmiş → öncelik → yeni sırasıyla gelir.
+class PushizoContentCard {
+  const PushizoContentCard({
+    required this.id,
+    required this.type,
+    this.messageId,
+    this.title,
+    this.body,
+    this.url,
+    this.imageUrl,
+    this.buttonText,
+    this.data = const {},
+    this.pinned = false,
+    this.priority = 0,
+    this.viewed = false,
+    this.clicked = false,
+    this.expiresAt,
+    this.createdAt,
+  });
+
+  final String id;
+  final PushizoContentCardType type;
+  final String? messageId;
+  final String? title;
+  final String? body;
+  final String? url;
+  final String? imageUrl;
+  final String? buttonText;
+  final Map<String, String> data;
+  final bool pinned;
+  final int priority;
+  final bool viewed;
+  final bool clicked;
+  final DateTime? expiresAt;
+  final DateTime? createdAt;
+
+  /// Platform kanalı haritasından (zamanlar epoch milisaniye, UTC).
+  factory PushizoContentCard.fromMap(Map<Object?, Object?> map) => PushizoContentCard(
+        id: map['id'] as String,
+        type: PushizoContentCardType.fromWire(map['type']),
+        messageId: map['messageId'] as String?,
+        title: map['title'] as String?,
+        body: map['body'] as String?,
+        url: map['url'] as String?,
+        imageUrl: map['imageUrl'] as String?,
+        buttonText: map['buttonText'] as String?,
+        data: (map['data'] as Map?)?.map((k, v) => MapEntry(k.toString(), v.toString())) ?? const {},
+        pinned: map['pinned'] == true,
+        priority: (map['priority'] as num?)?.toInt() ?? 0,
+        viewed: map['viewed'] == true,
+        clicked: map['clicked'] == true,
+        expiresAt: _epochMs(map['expiresAt']),
+        createdAt: _epochMs(map['createdAt']),
+      );
+}
+
+/// Kart akışı ve görülmemiş kart sayısı.
+class PushizoContentCardFeed {
+  const PushizoContentCardFeed({required this.cards, required this.unviewedCount});
+
+  final List<PushizoContentCard> cards;
+  final int unviewedCount;
+
+  factory PushizoContentCardFeed.fromMap(Map<Object?, Object?> map) {
+    final cards = ((map['cards'] as List?) ?? const [])
+        .whereType<Map>()
+        .map((m) => PushizoContentCard.fromMap(m.cast<Object?, Object?>()))
+        .toList();
+    return PushizoContentCardFeed(cards: cards, unviewedCount: (map['unviewedCount'] as num?)?.toInt() ?? cards.where((c) => !c.viewed).length);
+  }
+}
+
 /// Bildirim kutusu sayfası (yeniden eskiye).
 class PushizoInboxPage {
   const PushizoInboxPage({required this.items, required this.unreadCount, required this.hasMore, this.nextCursor});
@@ -357,6 +442,39 @@ class PushizoInboxPage {
         hasMore: map['hasMore'] == true,
       );
 }
+
+/// Bildirim kutusu değişim olayı ([Pushizo.Inbox.changes] / `addObserver`). [type]: [listed], [read], [readAll],
+/// [archived] veya [count]; [itemId] yalnızca tek öğe olaylarında (`read`, `archived`) doludur; [unreadCount] güncel
+/// okunmamış sayısıdır.
+class PushizoInboxChangeEvent {
+  const PushizoInboxChangeEvent({required this.type, required this.unreadCount, this.itemId});
+
+  static const String listed = 'listed';
+  static const String read = 'read';
+  static const String readAll = 'read_all';
+  static const String archived = 'archived';
+  static const String count = 'count';
+
+  final String type;
+  final String? itemId;
+  final int unreadCount;
+
+  /// Kanal olayı `{event, itemId, unreadCount}` (`event` olay türüdür; `type` kanal olay adına ayrılmıştır).
+  factory PushizoInboxChangeEvent.fromMap(Map<Object?, Object?> map) => PushizoInboxChangeEvent(
+        type: map['event'] as String? ?? '',
+        itemId: map['itemId'] as String?,
+        unreadCount: (map['unreadCount'] as num?)?.toInt() ?? 0,
+      );
+
+  @override
+  String toString() => 'PushizoInboxChangeEvent(type: $type, itemId: $itemId, unreadCount: $unreadCount)';
+}
+
+/// Kutu değişim gözlemcisi.
+typedef PushizoInboxObserver = void Function(PushizoInboxChangeEvent event);
+
+/// Özellik bayrağı gözlemcisi: değerler sunucudan başarıyla yenilendiğinde çağrılır.
+typedef PushizoFeatureFlagObserver = void Function();
 
 /// Kullanıcı tercihi (ADR-0019 §4): kategori × kanal (`null` = tüm kanallar) → opt-in. [explicit] false ise değer
 /// kategori varsayılanından türetilmiştir; [source] kaydı yazan taraf (sdk, api, preference_center…).
@@ -434,6 +552,44 @@ class PushizoPreferences {
             .map((m) => PushizoMessageCategory.fromMap(m.cast<Object?, Object?>()))
             .toList(),
       );
+}
+
+/// Rıza kaydı (`User.getConsents`): [purpose] rıza amacıdır (`ads_personalization` …); kayıt yoksa [granted] false.
+class PushizoConsent {
+  const PushizoConsent({required this.purpose, required this.granted, this.source, this.updatedAt});
+
+  final String purpose;
+  final bool granted;
+
+  /// Kaydı yazan taraf (`sdk`, `api`, `dashboard` …); kayıt yoksa null.
+  final String? source;
+  final DateTime? updatedAt;
+
+  factory PushizoConsent.fromMap(Map<Object?, Object?> map) => PushizoConsent(
+        purpose: map['purpose'] as String? ?? '',
+        granted: map['granted'] == true,
+        source: map['source'] as String?,
+        updatedAt: _epochMs(map['updatedAt']),
+      );
+}
+
+/// Girişle birlikte ayarlanan profil: `Pushizo.login('user_42', profile: const PushizoUserProfile(email: 'ali@pushizo.com'))`.
+class PushizoUserProfile {
+  const PushizoUserProfile({this.email, this.sms, this.tags = const {}, this.aliases = const {}});
+
+  final String? email;
+
+  /// Telefon numarası (E.164'e normalize edilir).
+  final String? sms;
+  final Map<String, String> tags;
+  final Map<String, String> aliases;
+
+  Map<String, Object?> toMap() => {
+        'email': ?email,
+        'sms': ?sms,
+        if (tags.isNotEmpty) 'tags': tags,
+        if (aliases.isNotEmpty) 'aliases': aliases,
+      };
 }
 
 /// `User.setPreferences` girdisi; [channel] null ise tüm kanallar.

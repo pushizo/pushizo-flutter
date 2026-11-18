@@ -52,6 +52,16 @@ void main() {
           return 0;
         case 'inboxUnreadCount':
           return 3;
+        case 'contentCardsList':
+          return {
+            'cards': [
+              {'id': 'c1', 'type': 'image_only', 'imageUrl': 'https://cdn/x.png', 'pinned': true, 'priority': 5, 'viewed': false, 'createdAt': 1759838400000},
+              {'id': 'c2', 'type': 'gelecekte', 'viewed': true},
+            ],
+            'unviewedCount': 1,
+          };
+        case 'contentCardEvent':
+          return {'id': 'c1', 'type': 'classic', 'viewed': true, 'clicked': true};
         case 'getPreferences':
         case 'setPreferences':
           return {
@@ -118,7 +128,7 @@ void main() {
               'background_color': null,
               'text_color': null,
             },
-            {'type': 'video', 'url': 'https://cdn.example.com/x.mp4'},
+            {'type': 'video', 'url': 'https://cdn.pushizo.com/x.mp4'},
           ],
         },
         'remaining_impressions': 1,
@@ -128,12 +138,12 @@ void main() {
       };
 
   test('e-posta/SMS çağrıları platforma iletilir', () async {
-    await Pushizo.User.addEmail('Ali@Example.com');
-    await Pushizo.User.removeEmail('ali@example.com');
+    await Pushizo.User.addEmail('Ali@Pushizo.com');
+    await Pushizo.User.removeEmail('ali@pushizo.com');
     await Pushizo.User.addSms('+90 532 123 45 67');
     await Pushizo.User.removeSms('+905321234567');
     expect(calls.map((c) => c.method).toList(), ['addEmail', 'removeEmail', 'addSms', 'removeSms']);
-    expect(calls[0].arguments, {'email': 'Ali@Example.com'});
+    expect(calls[0].arguments, {'email': 'Ali@Pushizo.com'});
     expect(calls[2].arguments, {'phoneNumber': '+90 532 123 45 67'});
   });
 
@@ -170,6 +180,22 @@ void main() {
     await Pushizo.Inbox.archive('ibx_1');
     expect(calls.last.method, 'inboxArchive');
     expect(await Pushizo.Inbox.unreadCount(), 3);
+  });
+
+  test('içerik kartı çağrıları ve modelleri (ADR-0082)', () async {
+    final feed = await Pushizo.ContentCards.list(limit: 10);
+    expect(calls.last.arguments, {'limit': 10});
+    expect(feed.unviewedCount, 1);
+    expect(feed.cards.first.type, PushizoContentCardType.imageOnly);
+    expect(feed.cards.first.createdAt, DateTime.utc(2025, 10, 7, 12));
+    expect(feed.cards.last.type, PushizoContentCardType.classic);
+    final clicked = await Pushizo.ContentCards.logClick('c1');
+    expect(clicked.clicked, isTrue);
+    expect(calls.last.arguments, {'id': 'c1', 'event': 'click'});
+    await Pushizo.ContentCards.dismiss('c1');
+    expect(calls.last.arguments, {'id': 'c1', 'event': 'dismiss'});
+    expect(() => Pushizo.ContentCards.list(limit: 0), throwsArgumentError);
+    expect(() => Pushizo.ContentCards.logImpression(''), throwsArgumentError);
   });
 
   test('tercih çağrıları ve modelleri', () async {

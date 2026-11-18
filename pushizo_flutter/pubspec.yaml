@@ -1,6 +1,6 @@
 name: pushizo_flutter
 description: "Pushizo Flutter SDK: push kaydı, kullanıcı/tag yönetimi, olaylar ve teslimat geri bildirimi (Android, iOS ve web)."
-version: 0.1.0
+version: 0.3.0
 homepage: https://docs.pushizo.com/docs/sdk/flutter
 repository: https://github.com/pushizo/pushizo-flutter
 issue_tracker: https://github.com/pushizo/pushizo-flutter/issues

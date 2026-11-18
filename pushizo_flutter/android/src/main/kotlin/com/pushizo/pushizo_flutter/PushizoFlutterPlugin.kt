@@ -3,16 +3,21 @@ package com.pushizo.pushizo_flutter
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.Application
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import com.pushizo.sdk.Pushizo
 import com.pushizo.sdk.HsCallback
+import com.pushizo.sdk.HsChatActivity
 import com.pushizo.sdk.HsChatEventAdapter
 import com.pushizo.sdk.HsChatOpenListener
 import com.pushizo.sdk.HsClickEvent
+import com.pushizo.sdk.HsConsent
+import com.pushizo.sdk.HsFeatureFlagObserver
 import com.pushizo.sdk.HsForegroundEvent
 import com.pushizo.sdk.HsInAppClickEvent
 import com.pushizo.sdk.HsInAppHandle
@@ -20,7 +25,12 @@ import com.pushizo.sdk.HsInAppLifecycleEvent
 import com.pushizo.sdk.HsInAppLifecycleListener
 import com.pushizo.sdk.HsInAppMessage
 import com.pushizo.sdk.HsInAppRenderer
+import com.pushizo.sdk.HsContentCard
+import com.pushizo.sdk.HsContentCardFeed
+import com.pushizo.sdk.HsDeliverySetting
+import com.pushizo.sdk.HsDeliveryStatus
 import com.pushizo.sdk.HsInboxItem
+import com.pushizo.sdk.HsInboxObserver
 import com.pushizo.sdk.HsInboxPage
 import com.pushizo.sdk.HsLog
 import com.pushizo.sdk.HsMessageCategory
@@ -29,6 +39,7 @@ import com.pushizo.sdk.HsPreferenceInput
 import com.pushizo.sdk.HsPreferencesResult
 import com.pushizo.sdk.HsNotification
 import com.pushizo.sdk.HsPushSubscriptionState
+import com.pushizo.sdk.HsUserProfile
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -36,6 +47,8 @@ import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.PluginRegistry
+import org.json.JSONObject
+import java.lang.ref.WeakReference
 import java.util.UUID
 
 /** Flutter → Android SDK köprüsü (MethodChannel + EventChannel). */
@@ -49,6 +62,8 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
     private var pendingPermission: MethodChannel.Result? = null
     /** Sistem konum izni sonucunu bekleyen Dart çağrısı (`requestLocationPermission`); yalnızca ana iş parçacığında. */
     private var pendingLocationPermission: MethodChannel.Result? = null
+    /** Bekleyen konum izni isteği arka plan izni için mi (sonuç `backgroundPermissionGranted` ile döner). */
+    private var pendingLocationBackground = false
     private val main = Handler(Looper.getMainLooper())
     /** Dart tarafında `setForegroundWillDisplayHandler` kayıtlı mı. */
     @Volatile private var foregroundHandlerEnabled = false
@@ -103,6 +118,36 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
     /** Yerel SDK izin gözlemcisi → Dart `permissionStream` / `addPermissionObserver`. */
     private val permissionObserver: (Boolean) -> Unit = { granted -> emit(mapOf("type" to "permission", "permission" to granted)) }
 
+    /** Yerel SDK bayrak gözlemcisi → Dart `Pushizo.FeatureFlags.changes` / `addObserver`. */
+    private val featureFlagObserver = HsFeatureFlagObserver { emit(mapOf("type" to "featureFlags")) }
+
+    /**
+     * Yerel SDK kutu gözlemcisi → Dart `Pushizo.Inbox.changes` / `addObserver`. Olay türü (`listed`, `read`, `read_all`,
+     * `archived`, `count`) `event` alanında taşınır; `type` kanal olay adına ayrılmıştır.
+     */
+    private val inboxObserver = HsInboxObserver { e ->
+        emit(mapOf("type" to "inboxChange", "event" to e.type, "itemId" to e.itemId, "unreadCount" to e.unreadCount))
+    }
+
+    /**
+     * Hazır sohbet ekranı (`HsChatActivity`) açık mı: yerel SDK bunu sunmadığından Activity yaşam döngüsünden izlenir
+     * (Dart `Pushizo.Chat.isPresented`). Yalnızca ana iş parçacığında erişilir.
+     */
+    private var chatActivity: WeakReference<Activity>? = null
+    private val chatLifecycle = object : Application.ActivityLifecycleCallbacks {
+        override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
+            if (activity is HsChatActivity) chatActivity = WeakReference(activity)
+        }
+        override fun onActivityDestroyed(activity: Activity) {
+            if (chatActivity?.get() === activity) chatActivity = null
+        }
+        override fun onActivityStarted(activity: Activity) = Unit
+        override fun onActivityResumed(activity: Activity) = Unit
+        override fun onActivityPaused(activity: Activity) = Unit
+        override fun onActivityStopped(activity: Activity) = Unit
+        override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+    }
+
     private val inAppClickListener: (HsInAppClickEvent) -> Unit = { e ->
         emit(mapOf("type" to "inAppClick", "messageId" to e.messageId, "actionId" to e.actionId, "url" to e.url))
     }
@@ -143,6 +188,7 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
         channel.setMethodCallHandler(this)
         events = EventChannel(binding.binaryMessenger, "pushizo_flutter/events")
         events.setStreamHandler(this)
+        (binding.applicationContext as? Application)?.registerActivityLifecycleCallbacks(chatLifecycle)
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -157,9 +203,14 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
         Pushizo.InAppMessages.setRenderer(null)
         Pushizo.Chat.removeListener(chatListener)
         Pushizo.Chat.removeOpenListener(chatOpenListener)
+        Pushizo.FeatureFlags.removeObserver(featureFlagObserver)
+        Pushizo.Inbox.removeObserver(inboxObserver)
+        (binding.applicationContext as? Application)?.unregisterActivityLifecycleCallbacks(chatLifecycle)
+        chatActivity = null
         inAppHandles.values.toList().forEach { it.closed() }
         inAppHandles.clear()
         foregroundEvents.clear()
+        placementMessages.clear()
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -187,11 +238,18 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
                     Pushizo.InAppMessages.setRenderer(inAppRenderer)
                     Pushizo.Chat.addListener(chatListener)
                     Pushizo.Chat.addOpenListener(chatOpenListener)
+                    Pushizo.FeatureFlags.addObserver(featureFlagObserver)
+                    Pushizo.Inbox.addObserver(inboxObserver)
                     result.success(null)
                 }
                 "setConsentGiven" -> { Pushizo.setConsentGiven(call.argument<Boolean>("given") ?: false); result.success(null) }
+                "isInitialized" -> result.success(Pushizo.isInitialized)
                 "login" -> {
-                    Pushizo.login(call.argument<String>("externalId")!!, call.argument<String>("identityHash"), call.argument<String>("jwt"))
+                    val externalId = call.argument<String>("externalId")!!
+                    val profile = call.argument<Map<String, Any?>>("profile")
+                    // Profil doğrulaması yerel SDK'da girişten önce yapılır (geçersiz e-posta/telefon → INVALID_ARGUMENT).
+                    if (profile == null) Pushizo.login(externalId, call.argument<String>("identityHash"), call.argument<String>("jwt"))
+                    else Pushizo.login(externalId, userProfile(profile), call.argument<String>("identityHash"), call.argument<String>("jwt"))
                     result.success(null)
                 }
                 // Boş belirteç → INVALID_ARGUMENT; giriş yoksa HS_ERROR (yerel SDK IllegalStateException).
@@ -206,7 +264,17 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
                 // Dart `PushizoForegroundEvent.display()`: ertelenen bildirim şimdi gösterilir (tek sefer; yerel SDK yineleneni yok sayar).
                 "displayForegroundNotification" -> { call.argument<String>("eventId")?.let { foregroundEvents.remove(it) }?.display(); result.success(null) }
                 "setLanguage" -> { Pushizo.User.setLanguage(call.argument<String>("code")!!); result.success(null) }
+                // Kullanıcı özelliği: null değer özelliği siler (boş anahtar → IllegalArgumentException → INVALID_ARGUMENT).
+                "setProperty" -> { Pushizo.User.setProperty(call.argument<String>("key").orEmpty(), call.argument<Any?>("value")); result.success(null) }
                 "getExternalId" -> result.success(Pushizo.User.externalId)
+                "getEmails" -> result.success(Pushizo.User.emails)
+                "getSmsNumbers" -> result.success(Pushizo.User.smsNumbers)
+                // Fire OS ADM kayıt kimliği (geçersiz kimlik → IllegalArgumentException → INVALID_ARGUMENT).
+                "registerAdm" -> { Pushizo.User.registerAdm(call.argument<String>("token").orEmpty()); result.success(null) }
+                // Reklam kişiselleştirme rızası ve reklam kimliği (ADR-0037)
+                "setAdsPersonalizationConsent" -> Pushizo.User.setAdsPersonalizationConsent(call.argument<Boolean>("granted") ?: false, reply(result) { it.toMap() })
+                "getConsents" -> Pushizo.User.getConsents(reply<List<HsConsent>>(result) { list -> list.map { it.toMap() } })
+                "setAdvertisingId" -> { Pushizo.Ads.setAdvertisingId(call.argument<String>("id")); result.success(null) }
                 "getUserId" -> result.success(Pushizo.User.id)
                 "getSubscriptionState" -> result.success(Pushizo.User.pushSubscription.state.toMap())
                 "optIn" -> { Pushizo.User.pushSubscription.optIn(); result.success(null) }
@@ -220,11 +288,20 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
                 }
                 // Bildirim tepsisi
                 "clearAll" -> { Pushizo.Notifications.clearAll(); result.success(null) }
+                // Rozet: yerel SDK sayıyı saklar ve sonraki bildirimlere yazar; sonuç rozetin bu cihazda gösterilip gösterilemediğidir.
+                "setBadgeCount" -> result.success(Pushizo.Notifications.setBadgeCount(call.argument<Number>("count")?.toInt() ?: 0))
+                "getBadgeCount" -> result.success(Pushizo.Notifications.badgeCount)
                 // Android tepsi kimliği; yalnızca iOS kimliği (`identifier`) verildiyse Android'de etkisizdir.
                 "removeNotification" -> { call.argument<Int>("id")?.let { Pushizo.Notifications.removeNotification(it) }; result.success(null) }
                 "removeGroupedNotifications" -> { Pushizo.Notifications.removeGroupedNotifications(call.argument<String>("group")!!); result.success(null) }
                 "sendEvent" -> {
-                    Pushizo.Session.sendEvent(call.argument<String>("name")!!, call.argument<Map<String, Any?>>("properties") ?: emptyMap(), call.argument<Double>("value"))
+                    val name = call.argument<String>("name")!!
+                    val properties = call.argument<Map<String, Any?>>("properties") ?: emptyMap()
+                    val value = call.argument<Number>("value")?.toDouble()
+                    // Tekilleştirme kimliği (ADR-0038): geçersiz biçimde yerel SDK kendi kimliğini üretir.
+                    val eventId = call.argument<String>("eventId")
+                    if (eventId == null) Pushizo.Session.sendEvent(name, properties, value)
+                    else Pushizo.Session.sendEvent(name, properties, value, eventId)
                     result.success(null)
                 }
                 "setLogLevel" -> { Pushizo.Debug.setLogLevel(logLevel(call.argument<String>("level"))); result.success(null) }
@@ -251,6 +328,24 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
                 "inboxMarkAllRead" -> Pushizo.Inbox.markAllRead(reply(result) { it })
                 "inboxArchive" -> Pushizo.Inbox.archive(call.argument<String>("id")!!, reply(result) { null })
                 "inboxUnreadCount" -> Pushizo.Inbox.unreadCount(reply(result) { it })
+                // İçerik kartları (ADR-0082)
+                "contentCardsList" -> Pushizo.ContentCards.list(call.argument<Int>("limit") ?: 50, reply(result) { it.toMap() })
+                "contentCardEvent" -> contentCardEvent(call.argument<String>("id") ?: "", call.argument<String>("event"), result)
+                // Gömülü yerleşimler (ADR-0068): mesajlar ham JSON olarak Dart'a gider; rapor çağrıları için kimliğe göre
+                // saklanır (geçersiz anahtar/limit → yerel SDK IllegalArgumentException → INVALID_ARGUMENT).
+                "placementsList" -> Pushizo.Placements.list(call.argument<String>("key").orEmpty(), call.argument<Int>("limit") ?: 1) { messages ->
+                    main.post {
+                        rememberPlacementMessages(messages)
+                        result.success(messages.map { it.toJson() })
+                    }
+                }
+                "placementsReportImpression" -> { placementMessage(call)?.let { Pushizo.Placements.reportImpression(it) }; result.success(null) }
+                "placementsReportClick" -> { placementMessage(call)?.let { Pushizo.Placements.reportClick(it, call.argument<String>("buttonId").orEmpty()) }; result.success(null) }
+                "placementsReportDismiss" -> { placementMessage(call)?.let { Pushizo.Placements.reportDismiss(it) }; result.success(null) }
+                // Özellik bayrakları (ADR-0066): okuma yerel önbellekten; ham değer `{"value": …}` JSON metni olarak taşınır.
+                "featureFlagsRefresh" -> Pushizo.FeatureFlags.refresh { ok -> main.post { result.success(ok) } }
+                "featureFlagsIsEnabled" -> result.success(Pushizo.FeatureFlags.isEnabled(call.argument<String>("key").orEmpty(), call.argument<Boolean>("defaultValue") ?: false))
+                "featureFlagsGetValue" -> result.success(Pushizo.FeatureFlags.getValue(call.argument<String>("key").orEmpty())?.let { JSONObject().put("value", it).toString() })
                 // Tercihler (ADR-0019 §4); kanıt ve istek yerel SDK'da
                 "getPreferences" -> Pushizo.User.getPreferences(reply(result) { it.toMap() })
                 "setPreferences" -> {
@@ -262,7 +357,29 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
                 // Konum paylaşımı (v2 Faz 17b); gönderim, aralık ve rıza kuralları yerel SDK'dadır.
                 "setLocationShared" -> { Pushizo.Location.setShared(call.argument<Boolean>("shared") ?: false); result.success(null) }
                 "getLocationShared" -> result.success(Pushizo.Location.isShared)
+                // Arka plan bölge izleme (ADR-0065): varsayılan kapalı; izin ve manifest girdileri uygulamanın sorumluluğundadır.
+                "setGeofencingEnabled" -> { Pushizo.Location.setGeofencingEnabled(call.argument<Boolean>("enabled") ?: false); result.success(null) }
+                "getGeofencingEnabled" -> result.success(Pushizo.Location.isGeofencingEnabled)
                 "requestLocationPermission" -> requestLocationPermission(call.argument<String>("rationale"), result)
+                "getLocationPermissionGranted" -> result.success(Pushizo.Location.permissionGranted)
+                "getLocationBackgroundPermissionGranted" -> result.success(Pushizo.Location.backgroundPermissionGranted)
+                "requestLocationBackgroundPermission" -> requestLocationBackgroundPermission(call.argument<String>("rationale"), result)
+                // Android teslimat güçlendirme (ADR-0092): teşhis, ayar ekranı adayları ve diyalog yerel SDK'dadır.
+                "deliveryStatus" -> result.success(Pushizo.Delivery.status()?.toMap())
+                "deliveryShouldShowGuidance" -> {
+                    val days = call.argument<Number>("minIntervalDays")?.toInt()
+                    result.success(if (days == null) Pushizo.Delivery.shouldShowGuidance() else Pushizo.Delivery.shouldShowGuidance(days))
+                }
+                "deliveryOpenSettings" -> {
+                    val ctx = activity ?: context
+                    result.success(ctx != null && Pushizo.Delivery.openSettings(ctx, deliverySetting(call.argument<String>("setting"))))
+                }
+                "deliveryShowGuidance" -> {
+                    // Diyalog görünür bir Activity ister; yoksa hiçbir şey gösterilmez. Sonuç ana iş parçacığında döner.
+                    val act = activity
+                    if (act == null) result.success(false)
+                    else Pushizo.Delivery.showGuidance(act, deliverySetting(call.argument<String>("setting")), call.argument<String>("message")) { opened -> result.success(opened) }
+                }
                 // Canlı sohbet (ADR-0040): kimlik, kuyruk, akış ve push yerel SDK'dadır.
                 "chatStart" -> Pushizo.Chat.start(call.argument<String>("name"), call.argument<String>("email"), call.argument<String>("language"), reply(result) { it.toMap() })
                 "chatGetConfig" -> Pushizo.Chat.getConfig(call.argument<String>("language"), reply(result) { it.toMap() })
@@ -287,6 +404,11 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
                 "chatStopListening" -> { Pushizo.Chat.stopListening(); result.success(null) }
                 "chatAttachmentUrl" -> result.success(Pushizo.Chat.attachmentUrl(call.argument<String>("attachmentId").orEmpty(), call.argument<Boolean>("download") ?: false))
                 "chatGetVisitorId" -> result.success(Pushizo.Chat.visitorId)
+                "chatIsListening" -> result.success(Pushizo.Chat.isListening)
+                // Hazır sohbet ekranı (HsChatActivity): Activity bağlamı tercih edilir; yoksa uygulama bağlamıyla yeni görevde açılır.
+                "chatShow" -> { (activity ?: context)?.let { Pushizo.Chat.show(it) }; result.success(null) }
+                "chatHide" -> result.success(Pushizo.Chat.hide())
+                "chatIsPresented" -> result.success(chatActivity?.get()?.let { !it.isFinishing && !it.isDestroyed } ?: false)
                 // Live Activities yalnızca iOS'ta vardır (ADR-0024); Android'de sessizce başarılı dönülmez.
                 "setupDefaultLiveActivity", "startDefaultLiveActivity" ->
                     result.error(LIVE_ACTIVITY_UNSUPPORTED_CODE, LIVE_ACTIVITY_UNSUPPORTED_MESSAGE, null)
@@ -300,6 +422,26 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
     }
 
     private fun inAppHandle(call: MethodCall): HsInAppHandle? = call.argument<String>("messageId")?.let { inAppHandles[it] }
+
+    /**
+     * Son `placementsList` çağrılarından dönen mesajlar (kimliğe göre, en çok [MAX_PLACEMENT_MESSAGES]); rapor çağrıları
+     * yerel SDK'ya bu nesnelerle yapılır. Yalnızca ana iş parçacığında erişilir.
+     */
+    private val placementMessages = LinkedHashMap<String, HsInAppMessage>()
+
+    private fun rememberPlacementMessages(messages: List<HsInAppMessage>) {
+        for (message in messages) {
+            placementMessages.remove(message.id)
+            placementMessages[message.id] = message
+        }
+        while (placementMessages.size > MAX_PLACEMENT_MESSAGES) placementMessages.remove(placementMessages.keys.first())
+    }
+
+    /** Rapor çağrısının mesajı; önbellekte yoksa çağrı sessizce yok sayılır. */
+    private fun placementMessage(call: MethodCall): HsInAppMessage? {
+        val id = call.argument<String>("messageId").orEmpty()
+        return placementMessages[id] ?: run { HsLog.d("yerleşim raporu yok sayıldı: mesaj listede yok ($id)"); null }
+    }
 
     /** SDK geri çağrısını Flutter sonucuna çevirir (Flutter sonucu ana iş parçacığında ister). */
     private fun <T> reply(result: MethodChannel.Result, map: (T) -> Any?) = HsCallback<T> { r ->
@@ -363,8 +505,62 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
         }
     }
 
-    /** Uygulama manifest'inde tanımlı konum izinleri (eklenti izin eklemez; arka plan konumu istenmez). */
+    /**
+     * Arka plan konum izni (bölge izleme): yerel SDK `requestBackgroundPermission` sonucu bildirmediğinden akış köprüde
+     * yürütülür. İzin zaten varsa `true`; Android 10 öncesinde ayrı arka plan izni olmadığından normal konum izni akışı;
+     * manifest'te `ACCESS_BACKGROUND_LOCATION` yoksa veya Activity yoksa `false`. Aksi hâlde SDK string kaynaklarıyla
+     * açıklama diyaloğu gösterilir ("Şimdi değil"/iptal → `false`); "Devam" ile sistem izni istenir (Android 11 ve
+     * sonrasında sistem Ayarlar ekranını açar) ve sonuç [onRequestPermissionsResult] içinde döner.
+     */
+    private fun requestLocationBackgroundPermission(rationale: String?, result: MethodChannel.Result) {
+        if (Pushizo.Location.backgroundPermissionGranted) {
+            Pushizo.Location.onPermissionResult()
+            result.success(true)
+            return
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            requestLocationPermission(rationale, result)
+            return
+        }
+        val act = activity ?: return result.success(false)
+        if (Manifest.permission.ACCESS_BACKGROUND_LOCATION !in requestedPermissions(act)) {
+            HsLog.w("arka plan konum izni istenemedi: uygulama manifest'inde ACCESS_BACKGROUND_LOCATION yok")
+            result.success(false)
+            return
+        }
+        if (pendingLocationPermission != null) {
+            result.error("HS_ERROR", "Konum izni isteği zaten sürüyor", null)
+            return
+        }
+        act.runOnUiThread {
+            if (act.isFinishing || act.isDestroyed) {
+                result.success(false)
+                return@runOnUiThread
+            }
+            var proceeded = false
+            AlertDialog.Builder(act)
+                .setTitle(com.pushizo.sdk.R.string.hs_geofence_rationale_title)
+                .setMessage(rationale?.takeIf { it.isNotBlank() } ?: act.getString(com.pushizo.sdk.R.string.hs_geofence_rationale_message))
+                .setPositiveButton(com.pushizo.sdk.R.string.hs_location_rationale_continue) { _, _ ->
+                    proceeded = true
+                    pendingLocationPermission = result
+                    pendingLocationBackground = true
+                    act.requestPermissions(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), Pushizo.Location.PERMISSION_REQUEST_CODE)
+                }
+                .setNegativeButton(com.pushizo.sdk.R.string.hs_location_rationale_not_now, null)
+                .setOnDismissListener { if (!proceeded) result.success(false) }
+                .show()
+        }
+    }
+
+    /** Uygulama manifest'inde tanımlı konum izinleri (eklenti izin eklemez). */
     private fun declaredLocationPermissions(ctx: Context): List<String> {
+        val requested = requestedPermissions(ctx)
+        return LOCATION_PERMISSIONS.filter { it in requested }
+    }
+
+    /** Uygulama manifest'inde istenen tüm izinler. */
+    private fun requestedPermissions(ctx: Context): Set<String> {
         val pm = ctx.packageManager
         val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             pm.getPackageInfo(ctx.packageName, PackageManager.PackageInfoFlags.of(PackageManager.GET_PERMISSIONS.toLong()))
@@ -372,11 +568,29 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
             @Suppress("DEPRECATION")
             pm.getPackageInfo(ctx.packageName, PackageManager.GET_PERMISSIONS)
         }
-        val requested = info.requestedPermissions?.toSet() ?: emptySet()
-        return LOCATION_PERMISSIONS.filter { it in requested }
+        return info.requestedPermissions?.toSet() ?: emptySet()
     }
 
+    /** Dart `PushizoUserProfile.toMap()` → yerel profil. */
+    private fun userProfile(map: Map<String, Any?>): HsUserProfile = HsUserProfile(
+        email = map["email"] as? String,
+        sms = map["sms"] as? String,
+        tags = stringMap(map["tags"]),
+        aliases = stringMap(map["aliases"]),
+    )
+
+    private fun stringMap(value: Any?): Map<String, String> =
+        (value as? Map<*, *>)?.entries?.mapNotNull { (k, v) -> if (k is String && v is String) k to v else null }?.toMap() ?: emptyMap()
+
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray): Boolean {
+        if (requestCode == Pushizo.Location.PERMISSION_REQUEST_CODE && pendingLocationBackground) {
+            // Arka plan izni isteği: sonuç arka plan izninin kendisidir (ön plan izni zaten verilmiş olabilir).
+            pendingLocationBackground = false
+            Pushizo.Location.onPermissionResult()
+            pendingLocationPermission?.success(Pushizo.Location.backgroundPermissionGranted)
+            pendingLocationPermission = null
+            return true
+        }
         if (requestCode == Pushizo.Location.PERMISSION_REQUEST_CODE) {
             Pushizo.Location.onPermissionResult()
             pendingLocationPermission?.success(Pushizo.Location.permissionGranted)
@@ -427,20 +641,49 @@ class PushizoFlutterPlugin : FlutterPlugin, MethodChannel.MethodCallHandler, Act
         else -> HsLog.Level.WARN
     }
 
+    /** Kanal değeri (`auto`, `notifications`, `auto_start`, `battery_optimization`, `app_details`) → ayar ekranı; tanınmayan değer `AUTO`. */
+    private fun deliverySetting(wire: String?): HsDeliverySetting =
+        HsDeliverySetting.values().firstOrNull { it.name.equals(wire, ignoreCase = true) } ?: HsDeliverySetting.AUTO
+
+    private fun HsDeliveryStatus.toMap() = mapOf(
+        "supported" to true, "manufacturer" to manufacturer, "brand" to brand, "vendor" to vendor.id, "aggressiveVendor" to vendor.aggressive,
+        "rom" to rom, "romVersion" to romVersion, "notificationsEnabled" to notificationsEnabled, "channelBlocked" to channelBlocked,
+        "batteryOptimizationExempt" to batteryOptimizationExempt, "backgroundRestricted" to backgroundRestricted,
+        "standbyBucket" to standbyBucket?.id, "powerSaveMode" to powerSaveMode, "dataSaverEnabled" to dataSaverEnabled,
+        "restricted" to restricted, "risk" to risk.name.lowercase(), "recommendedSettings" to recommendedSettings.map { it.name.lowercase() },
+    )
+
     private fun HsNotification.toMap() = mapOf("title" to title, "body" to body, "url" to url, "deliveryId" to deliveryId, "messageId" to messageId, "data" to data, "androidNotificationId" to androidNotificationId)
     private fun HsInboxItem.toMap() = mapOf(
         "id" to id, "messageId" to messageId, "title" to title, "body" to body, "url" to url, "imageUrl" to imageUrl,
         "data" to data, "read" to read, "readAt" to readAt, "archivedAt" to archivedAt, "expiresAt" to expiresAt, "createdAt" to createdAt,
     )
+    /** Kart olayı (ADR-0082); olay adı kanal yöntemi değildir, bu yüzden `when` dalı yerine koşul zinciri. */
+    private fun contentCardEvent(id: String, event: String?, result: MethodChannel.Result) {
+        val cb = reply<HsContentCard>(result) { it.toMap() }
+        if (event == "impression") Pushizo.ContentCards.logImpression(id, cb)
+        else if (event == "click") Pushizo.ContentCards.logClick(id, cb)
+        else if (event == "dismiss") Pushizo.ContentCards.dismiss(id, cb)
+        else result.error("PUSHIZO_INVALID_ARGUMENT", "Kart olayı impression, click veya dismiss olmalı.", null)
+    }
+
+    private fun HsContentCard.toMap() = mapOf(
+        "id" to id, "messageId" to messageId, "type" to type.wire, "title" to title, "body" to body, "url" to url, "imageUrl" to imageUrl,
+        "buttonText" to buttonText, "data" to data, "pinned" to pinned, "priority" to priority, "viewed" to viewed, "clicked" to clicked,
+        "expiresAt" to expiresAt, "createdAt" to createdAt,
+    )
+    private fun HsContentCardFeed.toMap() = mapOf("cards" to cards.map { it.toMap() }, "unviewedCount" to unviewedCount)
     private fun HsInboxPage.toMap() = mapOf("items" to items.map { it.toMap() }, "unreadCount" to unreadCount, "nextCursor" to nextCursor, "hasMore" to hasMore)
     private fun HsPreference.toMap() = mapOf("category" to category, "channel" to channel, "optedIn" to optedIn, "explicit" to explicit, "source" to source, "updatedAt" to updatedAt)
     private fun HsMessageCategory.toMap() = mapOf("key" to key, "name" to name, "description" to description, "channels" to channels, "defaultOptedIn" to defaultOptedIn)
     private fun HsPreferencesResult.toMap() = mapOf("data" to preferences.map { it.toMap() }, "categories" to categories.map { it.toMap() })
+    private fun HsConsent.toMap() = mapOf("purpose" to purpose, "granted" to granted, "source" to source, "updatedAt" to updatedAt)
     private fun HsPushSubscriptionState.toMap() = mapOf("id" to id, "token" to token, "optedIn" to optedIn, "permission" to permission)
 
     private companion object {
         const val MAX_PENDING_CLICKS = 20
         const val MAX_FOREGROUND_EVENTS = 32
+        const val MAX_PLACEMENT_MESSAGES = 50
         const val LIVE_ACTIVITY_UNSUPPORTED_CODE = "PLATFORM_NOT_SUPPORTED"
         const val LIVE_ACTIVITY_UNSUPPORTED_MESSAGE = "Live Activities yalnızca iOS'ta desteklenir"
         val LOCATION_PERMISSIONS = listOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)

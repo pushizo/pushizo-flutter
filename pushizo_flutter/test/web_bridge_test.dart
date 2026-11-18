@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -76,22 +77,22 @@ void main() {
     test('initialize seçenekleri Web SDK init seçeneklerine eşlenir; dinleyiciler bir kez eklenir', () async {
       await call('initialize', {
         'appId': 'app_1',
-        'apiUrl': 'https://api.example.com',
+        'apiUrl': 'https://api.pushizo.com',
         'requiresPrivacyConsent': true,
         'logLevel': 'none',
         'web': {'serviceWorkerPath': '/push/PushizoSDKWorker.js', 'serviceWorkerScope': '/push/'},
       });
-      await call('initialize', {'appId': 'app_1', 'apiUrl': 'https://api.example.com', 'logLevel': 'debug'});
+      await call('initialize', {'appId': 'app_1', 'apiUrl': 'https://api.pushizo.com', 'logLevel': 'debug'});
       expect(sdk.calls.first, ['init', {
         'appId': 'app_1',
-        'apiUrl': 'https://api.example.com',
+        'apiUrl': 'https://api.pushizo.com',
         'requiresPrivacyConsent': true,
         'logLevel': 'silent',
         'serviceWorkerPath': '/push/PushizoSDKWorker.js',
         'serviceWorkerScope': '/push/',
       }]);
-      expect(sdk.calls[1][1], {'appId': 'app_1', 'apiUrl': 'https://api.example.com', 'requiresPrivacyConsent': false, 'logLevel': 'debug'});
-      expect(sdk.listenerCount, 6);
+      expect(sdk.calls[1][1], {'appId': 'app_1', 'apiUrl': 'https://api.pushizo.com', 'requiresPrivacyConsent': false, 'logLevel': 'debug'});
+      expect(sdk.listenerCount, 8);
       await expectLater(call('initialize', {'appId': ''}), platformError('INVALID_ARGUMENT'));
     });
 
@@ -116,7 +117,7 @@ void main() {
       await expectLater(call('login', {'externalId': 'u1'}), platformError('HS_ERROR'));
       sdk.failures['updateUserJwt'] = const WebSdkError('Pushizo.init önce çağrılmalı.');
       await expectLater(call('updateUserJwt', {'jwt': 'x'}), platformError('NOT_READY'));
-      sdk.failures['addEmail'] = const WebSdkError('Geçersiz e-posta adresi (ör. ad@ornek.com).', name: 'ContactValidationError');
+      sdk.failures['addEmail'] = const WebSdkError('Geçersiz e-posta adresi (ör. ad@pushizo.com).', name: 'ContactValidationError');
       await expectLater(call('addEmail', {'email': 'x'}), platformError('INVALID_ARGUMENT'));
       sdk.failures['addAliases'] = const WebSdkError('Geçersiz alias etiketi "A"');
       await expectLater(call('addAliases', {'aliases': {'A': '1'}}), platformError('INVALID_ARGUMENT'));
@@ -138,7 +139,7 @@ void main() {
       expect(await call('getTags'), {'plan': 'pro', 'score': '3', 'vip': 'true'});
       await call('addAliases', {'aliases': {'crm_id': '42'}});
       await call('removeAlias', {'label': 'crm_id'});
-      await call('addEmail', {'email': 'ali@example.com'});
+      await call('addEmail', {'email': 'ali@pushizo.com'});
       await call('removeSms', {'phoneNumber': '+905321234567'});
       await call('setLanguage', {'code': 'tr'});
       expect(await call('getExternalId'), 'u1');
@@ -223,6 +224,34 @@ void main() {
       expect(sdk.calls.last, ['inboxArchive', 'i1']);
     });
 
+    test('içerik kartları (ADR-0082): akış ve olaylar Web SDK ContentCards ile', () async {
+      final card = {
+        'id': 'c1',
+        'messageId': 'm1',
+        'type': 'captioned_image',
+        'title': 'Kart',
+        'buttonText': 'İncele',
+        'data': {'k': 'v'},
+        'pinned': true,
+        'priority': 70.0,
+        'viewed': false,
+        'clicked': false,
+        'expiresAt': null,
+        'createdAt': '2026-11-10T10:00:00.000Z',
+      };
+      sdk.values['contentCardsList'] = {'cards': [card], 'unviewedCount': 1.0};
+      sdk.values['contentCardEvent'] = {...card, 'clicked': true, 'viewed': true};
+      final feed = PushizoContentCardFeed.fromMap((await call('contentCardsList', {'limit': 10}) as Map).cast());
+      expect(feed.unviewedCount, 1);
+      expect(feed.cards.single.type, PushizoContentCardType.captionedImage);
+      expect(feed.cards.single.priority, 70);
+      expect(feed.cards.single.createdAt, DateTime.utc(2026, 11, 10, 10));
+      final clicked = PushizoContentCard.fromMap((await call('contentCardEvent', {'id': 'c1', 'event': 'click'}) as Map).cast());
+      expect(clicked.clicked, isTrue);
+      expect(sdk.calls.last, ['contentCardEvent', 'c1', 'click']);
+      await expectLater(call('contentCardEvent', {'id': 'c1', 'event': 'open'}), throwsA(isA<PlatformException>()));
+    });
+
     Map<String, Object?> webPreferences() => {
           'preferences': [
             {'category': 'orders', 'channel': null, 'optedIn': true, 'explicit': false, 'source': null, 'updatedAt': null},
@@ -233,6 +262,27 @@ void main() {
             {'key': 'promos', 'name': {'tr': 'Kampanyalar'}, 'description': <String, String>{}, 'channels': null, 'defaultOptedIn': true},
           ],
         };
+
+    test('reklam rızası kuyruğa yazılır ve güncel tercih listesi döner; rıza kayıtları eşlenir', () async {
+      sdk.values['getPreferences'] = {
+        ...webPreferences(),
+        'consents': [
+          {'purpose': 'ads_personalization', 'granted': true, 'source': 'sdk', 'updatedAt': '2026-10-01T00:00:00.000Z'},
+          {'granted': true},
+        ],
+      };
+      final result = await call('setAdsPersonalizationConsent', {'granted': true});
+      expect(sdk.calls.map((c) => c.first), ['getPreferences', 'setAdsPersonalizationConsent']);
+      expect(sdk.calls.last, ['setAdsPersonalizationConsent', true]);
+      expect(PushizoPreferences.fromMap((result as Map).cast()).preferences.map((p) => p.category), ['orders', 'promos']);
+      final consents = (await call('getConsents') as List).map((c) => PushizoConsent.fromMap((c as Map).cast())).toList();
+      expect(consents.single.purpose, 'ads_personalization');
+      expect(consents.single.granted, isTrue);
+      expect(consents.single.updatedAt, DateTime.utc(2026, 10));
+      sdk.failures['getPreferences'] = const WebSdkError('Tercihler için abonelik gerekli');
+      await expectLater(call('setAdsPersonalizationConsent', {'granted': false}), platformError('NOT_READY'));
+      await expectLater(call('getConsents'), platformError('NOT_READY'));
+    });
 
     test('getPreferences köprü biçimine eşlenir', () async {
       sdk.values['getPreferences'] = webPreferences();
@@ -295,6 +345,88 @@ void main() {
     ]);
     sdk.failures['setLocationShared'] = const WebSdkError('Pushizo.init önce çağrılmalı.');
     await expectLater(call('setLocationShared', {'shared': true}), platformError('NOT_READY'));
+  });
+
+  test('bölge izleme web\'de yoktur: açma etkisiz, durum false; Web SDK\'ya çağrı gitmez', () async {
+    expect(await call('setGeofencingEnabled', {'enabled': true}), isNull);
+    expect(await call('getGeofencingEnabled'), isFalse);
+    expect(sdk.calls, isEmpty);
+  });
+
+  group('özellik bayrakları', () {
+    test('refresh, isEnabled ve getValue Web SDK FeatureFlags API\'sine iletilir', () async {
+      sdk.values['featureFlagsRefresh'] = true;
+      sdk.values['featureFlagEnabled'] = true;
+      sdk.values['featureFlagValueJson'] = '{"value":{"max":3}}';
+      expect(await call('featureFlagsRefresh'), isTrue);
+      expect(await call('featureFlagsIsEnabled', {'key': 'new_checkout', 'defaultValue': false}), isTrue);
+      expect(await call('featureFlagsGetValue', {'key': 'limits'}), '{"value":{"max":3}}');
+      sdk.values['featureFlagValueJson'] = null;
+      expect(await call('featureFlagsGetValue', {'key': 'missing'}), isNull);
+      expect(sdk.calls, [
+        ['featureFlagsRefresh'],
+        ['featureFlagEnabled', 'new_checkout', false],
+        ['featureFlagValueJson', 'limits'],
+        ['featureFlagValueJson', 'missing'],
+      ]);
+      await expectLater(call('featureFlagsIsEnabled', {'defaultValue': true}), platformError('INVALID_ARGUMENT'));
+      sdk.failures['featureFlagsRefresh'] = const WebSdkError('Pushizo.init önce çağrılmalı.');
+      await expectLater(call('featureFlagsRefresh'), platformError('NOT_READY'));
+    });
+  });
+
+  group('yerleşimler', () {
+    String message(String id, {String? variant}) =>
+        '{"id":"$id","priority":1${variant == null ? '' : ',"variant_id":"$variant"'},"display":{"layout":"modal","blocks":[]}}';
+
+    test('list anahtar/limit ile Web SDK\'ya gider; raporlar listedeki mesajla yapılır, bilinmeyen mesaj yok sayılır', () async {
+      sdk.values['placementsList'] = [message('m1', variant: 'var_b'), message('m2')];
+      final result = await call('placementsList', {'key': 'home_top', 'limit': 2});
+      expect(result, [message('m1', variant: 'var_b'), message('m2')]);
+      final parsed = PushizoInAppMessage.fromMap(jsonDecode((result as List).first as String) as Map<String, dynamic>);
+      expect(parsed.variantId, 'var_b');
+
+      await call('placementsReportImpression', {'messageId': 'm1'});
+      await call('placementsReportClick', {'messageId': 'm1', 'buttonId': 'go'});
+      await call('placementsReportDismiss', {'messageId': 'm2'});
+      await call('placementsReportImpression', {'messageId': 'unknown'});
+      await call('placementsReportDismiss', const {});
+      expect(sdk.calls, [
+        ['placementsList', 'home_top', 2],
+        ['placementsReport', 'reportImpression', message('m1', variant: 'var_b'), null],
+        ['placementsReport', 'reportClick', message('m1', variant: 'var_b'), 'go'],
+        ['placementsReport', 'reportDismiss', message('m2'), null],
+      ]);
+      await expectLater(call('placementsReportClick', {'messageId': 'm1'}), platformError('INVALID_ARGUMENT'));
+    });
+
+    test('varsayılan limit 1; önbellek en çok 50 mesaj tutar (en eski düşer, yenilenen mesaj tazelenir)', () async {
+      sdk.values['placementsList'] = [message('m0')];
+      await call('placementsList', {'key': 'a'});
+      expect(sdk.calls.single, ['placementsList', 'a', 1]);
+      sdk.values['placementsList'] = [for (var i = 1; i <= 49; i++) message('m$i')];
+      await call('placementsList', {'key': 'b', 'limit': 10});
+      sdk.values['placementsList'] = [message('m0'), message('m50')];
+      await call('placementsList', {'key': 'c', 'limit': 2});
+      sdk.calls.clear();
+      await call('placementsReportImpression', {'messageId': 'm0'});
+      await call('placementsReportImpression', {'messageId': 'm1'});
+      await call('placementsReportImpression', {'messageId': 'm2'});
+      expect(sdk.calls.map((c) => jsonDecode(c[2] as String)['id']), ['m0', 'm2']);
+    });
+
+    test('geçersiz anahtar ve limit Web SDK\'ya gitmeden INVALID_ARGUMENT döner', () async {
+      for (final key in ['', 'Home', '1abc', 'a' * 65, 'home top']) {
+        await expectLater(call('placementsList', {'key': key}), platformError('INVALID_ARGUMENT'), reason: key);
+      }
+      await expectLater(call('placementsList', {'key': 'home', 'limit': 0}), platformError('INVALID_ARGUMENT'));
+      await expectLater(call('placementsList', {'key': 'home', 'limit': 11}), platformError('INVALID_ARGUMENT'));
+      await expectLater(call('placementsList', {'key': 'home', 'limit': 'x'}), platformError('INVALID_ARGUMENT'));
+      await expectLater(call('placementsList', const {}), platformError('INVALID_ARGUMENT'));
+      expect(sdk.calls, isEmpty);
+      sdk.failures['placementsList'] = const WebSdkError('Pushizo.init önce çağrılmalı.');
+      await expectLater(call('placementsList', {'key': 'home'}), platformError('NOT_READY'));
+    });
   });
 
   group('olaylar', () {
@@ -376,6 +508,251 @@ void main() {
     });
   });
 
+  test('yalnızca yerel platformlarda anlamlı API\'ler web\'de zararsızdır: Web SDK yüklenmemiş olsa da hata vermez', () async {
+    sdk.loaded = false;
+    expect(await call('setAdvertisingId', {'id': 'x'}), isNull);
+    expect(await call('setBadgeCount', {'count': 3}), isFalse);
+    expect(await call('getBadgeCount'), 0);
+    expect(await call('chatIsPresented'), isFalse);
+    expect(await call('chatHide'), isFalse);
+    expect(await call('registerAdm', {'token': 't'}), isNull);
+    expect(await call('getEmails'), isEmpty);
+    expect(await call('getSmsNumbers'), isEmpty);
+    expect(await call('getLocationPermissionGranted'), isFalse);
+    expect(await call('getLocationBackgroundPermissionGranted'), isFalse);
+    expect(await call('requestLocationBackgroundPermission', {'rationale': null}), isFalse);
+    expect(await call('chatIsListening'), isFalse);
+    expect(await call('isInitialized'), isFalse);
+    expect(sdk.calls, isEmpty);
+  });
+
+  test('isInitialized initialize sonrasında true; profille login Web SDK login çağrısına profil olarak gider', () async {
+    expect(await call('isInitialized'), isFalse);
+    await call('initialize', {'appId': 'app_1'});
+    expect(await call('isInitialized'), isTrue);
+    sdk.calls.clear();
+    await call('login', {
+      'externalId': 'u1',
+      'identityHash': null,
+      'profile': {'email': 'ali@pushizo.com', 'sms': '+905321234567', 'tags': {'plan': 'pro'}, 'aliases': {'crm_id': '42'}},
+    });
+    expect(sdk.calls, [
+      ['login', 'u1', null, null, {'email': 'ali@pushizo.com', 'sms': '+905321234567', 'tags': {'plan': 'pro'}, 'aliases': {'crm_id': '42'}}],
+    ]);
+    // Yalnızca verilen alanlar gider; geçersiz profil Web SDK'da girişten önce reddedilir (INVALID_ARGUMENT).
+    sdk.calls.clear();
+    await call('login', {'externalId': 'u2', 'identityHash': 'h', 'profile': {'email': 'a@b.co'}});
+    expect(sdk.calls.single, ['login', 'u2', 'h', null, {'email': 'a@b.co'}]);
+    sdk.failures['login'] = const WebSdkError('Geçersiz e-posta adresi (ör. ad@pushizo.com).', name: 'ContactValidationError');
+    await expectLater(call('login', {'externalId': 'u3', 'profile': {'email': 'x'}}), platformError('INVALID_ARGUMENT'));
+  });
+
+  group('yerel API eşitliği (tur 3)', () {
+    test('setProperty değeri türüyle iletir; null siler; geçersiz anahtar Web SDK\'ya gitmez', () async {
+      await call('setProperty', {'key': 'first_name', 'value': 'Ali'});
+      await call('setProperty', {'key': ' level ', 'value': 7});
+      await call('setProperty', {'key': 'prefs', 'value': {'dark': true, 'tags': ['a', 2.5]}});
+      await call('setProperty', {'key': 'first_name', 'value': null});
+      expect(sdk.calls, [
+        ['setProperty', 'first_name', 'Ali'],
+        ['setProperty', 'level', 7],
+        ['setProperty', 'prefs', {'dark': true, 'tags': ['a', 2.5]}],
+        ['setProperty', 'first_name', null],
+      ]);
+      await expectLater(call('setProperty', {'key': '', 'value': 1}), platformError('INVALID_ARGUMENT'));
+      await expectLater(call('setProperty', {'key': '   ', 'value': 1}), platformError('INVALID_ARGUMENT'));
+      await expectLater(call('setProperty', {'key': 'k' * 65, 'value': 1}), platformError('INVALID_ARGUMENT'));
+      expect(sdk.calls, hasLength(4));
+    });
+
+    test('rozet Web SDK setBadgeCount ile ayarlanır; sonuç ve son başarılı değer döner', () async {
+      sdk.values['setBadgeCount'] = true;
+      expect(await call('setBadgeCount', {'count': 3}), isTrue);
+      expect(await call('getBadgeCount'), 3);
+      // Tarayıcı desteklemiyor: false; saklanan değer değişmez.
+      sdk.values['setBadgeCount'] = false;
+      expect(await call('setBadgeCount', {'count': 5}), isFalse);
+      expect(await call('getBadgeCount'), 3);
+      // Sayfadaki Web SDK sürümü rozeti sunmuyor: hata yerine false.
+      sdk.failures['setBadgeCount'] = const WebSdkError('Web SDK yöntemi bulunamadı: setBadgeCount');
+      expect(await call('setBadgeCount', {'count': 0}), isFalse);
+      sdk.failures.clear();
+      sdk.values['setBadgeCount'] = true;
+      expect(await call('setBadgeCount', {'count': 0}), isTrue);
+      expect(await call('getBadgeCount'), 0);
+      expect(sdk.calls, [
+        ['setBadgeCount', 3],
+        ['setBadgeCount', 5],
+        ['setBadgeCount', 0],
+        ['setBadgeCount', 0],
+      ]);
+    });
+
+    test('sendEvent eventId yalnızca verildiğinde iletilir', () async {
+      await call('sendEvent', {'name': 'purchase', 'properties': {'sku': 'A1'}, 'value': 49.9, 'eventId': 'order-1042'});
+      await call('sendEvent', {'name': 'viewed', 'properties': <String, Object?>{}, 'value': null, 'eventId': 'view-0001'});
+      await call('sendEvent', {'name': 'viewed', 'properties': <String, Object?>{}, 'value': null});
+      expect(sdk.calls, [
+        ['sendEvent', 'purchase', {'sku': 'A1'}, 49.9, 'order-1042'],
+        ['sendEvent', 'viewed', <String, Object?>{}, null, 'view-0001'],
+        ['sendEvent', 'viewed', <String, Object?>{}, null],
+      ]);
+    });
+
+    test('konum izni durumu Web SDK Location.permissionGranted değeridir; arka plan izni web\'de yoktur', () async {
+      expect(await call('getLocationPermissionGranted'), isFalse);
+      sdk.values['locationPermissionGranted'] = true;
+      expect(await call('getLocationPermissionGranted'), isTrue);
+      expect(await call('getLocationBackgroundPermissionGranted'), isFalse);
+      expect(sdk.calls, [
+        ['locationPermissionGranted'],
+        ['locationPermissionGranted'],
+      ]);
+    });
+
+    test('bayrak ve kutu gözlemcileri olay akışına iletilir', () async {
+      await call('initialize', {'appId': 'app_1'});
+      final events = <Map<String, Object?>>[];
+      final sub = bridge.eventController.stream.listen(events.add);
+      await pumpEventQueue();
+      sdk.featureFlagsChanged();
+      sdk.inboxChanged({'type': 'read', 'itemId': 'i1', 'unreadCount': 2.0});
+      sdk.inboxChanged({'type': 'read_all', 'unreadCount': 0});
+      await pumpEventQueue();
+      expect(events, [
+        {'type': 'featureFlags'},
+        {'type': 'inboxChange', 'event': 'read', 'itemId': 'i1', 'unreadCount': 2},
+        {'type': 'inboxChange', 'event': 'read_all', 'itemId': null, 'unreadCount': 0},
+      ]);
+      final change = PushizoInboxChangeEvent.fromMap(events[1]);
+      expect('${change.type}/${change.itemId}/${change.unreadCount}', 'read/i1/2');
+      await sub.cancel();
+    });
+
+    test('sohbet: hazır widget show/hide/isPresented; app ayarında kapalıysa eklenmez', () async {
+      sdk.values['chatConfig'] = {'enabled': false};
+      await call('chatShow');
+      expect(await call('chatIsPresented'), isFalse);
+      expect(await call('chatHide'), isFalse);
+      sdk.calls.clear();
+      sdk.values['chatConfig'] = {'enabled': true};
+      await call('chatShow');
+      expect(await call('chatIsPresented'), isTrue);
+      expect(await call('chatHide'), isTrue);
+      expect(await call('chatIsPresented'), isFalse);
+      expect(sdk.calls, [
+        ['chatConfig', false],
+        ['chatShow'],
+        ['chatHide'],
+      ]);
+      sdk.failures['chatConfig'] = const WebSdkError('Pushizo.init önce çağrılmalı.');
+      await expectLater(call('chatShow'), platformError('NOT_READY'));
+    });
+
+    test('sohbet: ayarlar, konuşma, okunmamış sayısı, yazıyor ve ek adresi köprü biçimine eşlenir', () async {
+      sdk.values['chatConfig'] = {
+        'enabled': true, 'online': true, 'within_business_hours': true, 'color': '#0af', 'text_color': null,
+        'position': 'left', 'theme': 'dark', 'title': 'Destek', 'greeting': 'Merhaba', 'offline_message': 'Kapalıyız',
+        'collect_email_offline': true, 'require_email': false,
+        'attachments': {'enabled': true, 'max_bytes': 10485760.0, 'types': ['image/png', 'application/pdf']},
+        'language': 'tr',
+      };
+      sdk.values['chatConversation'] = {
+        'conversation': {
+          'id': 'cnv_1', 'status': 'open', 'last_seq': 9.0, 'agent_last_read_seq': 4, 'visitor_last_read_seq': 7,
+          'unread_count': 2, 'bot_active': false, 'assignee_name': 'Ayşe', 'created_at': '2026-01-02T03:04:05.000Z',
+        },
+        'unread_count': 2,
+      };
+      sdk.values['chatUnreadCount'] = 2;
+      sdk.values['chatRefreshUnreadCount'] = 3.0;
+      sdk.values['chatAttachmentUrl'] = 'https://api.pushizo.com/chat/attachments/att_1?visitor_id=v';
+      final config = PushizoChatConfig.fromMap((await call('chatGetConfig', {'language': 'tr'}))! as Map<Object?, Object?>);
+      expect(config.enabled && config.online && config.withinBusinessHours && config.collectEmailOffline, isTrue);
+      expect(config.requireEmail, isFalse);
+      expect('${config.color}/${config.textColor}/${config.position}/${config.theme}/${config.language}', '#0af/null/left/dark/tr');
+      expect('${config.title}/${config.greeting}/${config.offlineMessage}', 'Destek/Merhaba/Kapalıyız');
+      expect(config.attachmentsEnabled, isTrue);
+      expect(config.attachmentMaxBytes, 10485760);
+      expect(config.attachmentTypes, ['image/png', 'application/pdf']);
+      final state = PushizoChatConversationState.fromMap((await call('chatGetConversation'))! as Map<Object?, Object?>);
+      expect(state.unreadCount, 2);
+      expect(state.conversation!.id, 'cnv_1');
+      expect('${state.conversation!.lastSeq}/${state.conversation!.agentLastReadSeq}/${state.conversation!.visitorLastReadSeq}', '9/4/7');
+      expect(state.conversation!.assigneeName, 'Ayşe');
+      expect(state.conversation!.createdAt, DateTime.utc(2026, 1, 2, 3, 4, 5));
+      expect(await call('chatGetUnreadCount'), 2);
+      expect(await call('chatRefreshUnreadCount'), 3);
+      await call('chatSetTyping', {'typing': true});
+      expect(await call('chatAttachmentUrl', {'attachmentId': 'att_1', 'download': true}), startsWith('https://api.pushizo.com/chat/attachments/att_1'));
+      await expectLater(call('chatAttachmentUrl', {'attachmentId': ''}), platformError('INVALID_ARGUMENT'));
+      expect(sdk.calls, [
+        ['chatConfig', true],
+        ['chatConversation'],
+        ['chatUnreadCount'],
+        ['chatRefreshUnreadCount'],
+        ['chatSetTyping', true],
+        ['chatAttachmentUrl', 'att_1', true],
+      ]);
+      // Konuşma henüz yoksa null.
+      sdk.values['chatConversation'] = {'conversation': null, 'unread_count': 0};
+      expect(await call('chatGetConversation'), {'conversation': null, 'unreadCount': 0});
+      // Mesajlaşma yöntemleri web'de widget ile yapılır.
+      for (final method in ['chatStart', 'chatGetMessages', 'chatSendMessage', 'chatSendAttachment', 'chatMarkRead', 'chatLeaveOfflineMessage', 'chatStartListening', 'chatStopListening', 'chatGetVisitorId']) {
+        await expectLater(call(method, const {}), platformError('PLATFORM_NOT_SUPPORTED'), reason: method);
+      }
+    });
+
+    test('Dart genel API\'si: setProperty, rozet, eventId ve sohbet web köprüsüyle uçtan uca', () async {
+      const channel = MethodChannel('pushizo_flutter');
+      final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(channel, bridge.handle);
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      sdk.values['setBadgeCount'] = true;
+      sdk.values['chatConfig'] = {'enabled': true};
+      sdk.values['locationPermissionGranted'] = true;
+      await Pushizo.User.setProperty('plan', 'pro');
+      expect(await Pushizo.Notifications.setBadgeCount(4), isTrue);
+      expect(await Pushizo.Notifications.badgeCount, 4);
+      expect(await Pushizo.Notifications.clearBadge(), isTrue);
+      await Pushizo.Session.sendEvent('purchase', value: 9.5, eventId: 'order-1042');
+      expect(await Pushizo.Location.permissionGranted, isTrue);
+      await Pushizo.Chat.show();
+      expect(await Pushizo.Chat.isPresented, isTrue);
+      expect(await Pushizo.Chat.hide(), isTrue);
+      await expectLater(Pushizo.Chat.sendMessage('Merhaba'), platformError('PLATFORM_NOT_SUPPORTED'));
+      expect(sdk.calls, [
+        ['setProperty', 'plan', 'pro'],
+        ['setBadgeCount', 4],
+        ['setBadgeCount', 0],
+        ['sendEvent', 'purchase', <String, Object?>{}, 9.5, 'order-1042'],
+        ['locationPermissionGranted'],
+        ['chatConfig', false],
+        ['chatShow'],
+        ['chatHide'],
+      ]);
+    });
+  });
+
+  test('Android teslimat güçlendirme web\'de zararsızdır: Web SDK yüklenmemiş olsa da hata vermez', () async {
+    sdk.loaded = false;
+    expect(await call('deliveryStatus'), isNull);
+    expect(await call('deliveryShouldShowGuidance', {'minIntervalDays': 30}), isFalse);
+    expect(await call('deliveryOpenSettings', {'setting': 'auto_start'}), isFalse);
+    expect(await call('deliveryShowGuidance', {'setting': 'auto', 'message': null}), isFalse);
+    expect(sdk.calls, isEmpty);
+
+    const channel = MethodChannel('pushizo_flutter');
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, bridge.handle);
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    final status = await Pushizo.Delivery.status();
+    expect(status.supported, isFalse);
+    expect(status.risk, PushizoDeliveryRisk.none);
+    expect(await Pushizo.Delivery.openSettings(), isFalse);
+    expect(await Pushizo.Delivery.showGuidance(), isFalse);
+  });
+
   test('Dart genel API\'si web köprüsüyle uçtan uca çalışır', () async {
     const channel = MethodChannel('pushizo_flutter');
     final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
@@ -384,24 +761,33 @@ void main() {
     sdk.values['locationShared'] = false;
     sdk.values['requestLocationPermission'] = true;
     sdk.values['getTags'] = {'plan': 'pro'};
-    await Pushizo.initialize('app_1', apiUrl: 'https://api.example.com', web: const PushizoWebOptions(allowLocalhostAsSecureOrigin: true));
+    await Pushizo.initialize('app_1', apiUrl: 'https://api.pushizo.com', web: const PushizoWebOptions(allowLocalhostAsSecureOrigin: true));
     await Pushizo.login('u1', jwt: 'h.p.s');
     await Pushizo.User.addTag('plan', 'pro');
     expect(await Pushizo.User.getTags(), {'plan': 'pro'});
     expect(await Pushizo.Location.isShared, isFalse);
     expect(await Pushizo.Location.requestPermission(rationale: 'Yakındaki mağazalar'), isTrue);
     await Pushizo.Location.setShared(true);
+    await Pushizo.Location.setGeofencingEnabled(true);
+    expect(await Pushizo.Location.isGeofencingEnabled, isFalse);
+    sdk.values['featureFlagEnabled'] = true;
+    sdk.values['featureFlagValueJson'] = '{"value":[1,"a"]}';
+    sdk.values['placementsList'] = ['{"id":"m1","priority":1,"display":{"layout":"modal","blocks":[]}}'];
+    expect(await Pushizo.FeatureFlags.isEnabled('beta'), isTrue);
+    expect(await Pushizo.FeatureFlags.getValue('list'), [1, 'a']);
+    final placement = (await Pushizo.Placements.list('home_top')).single;
+    await Pushizo.Placements.reportImpression(placement);
     await expectLater(Pushizo.LiveActivities.setupDefaultLiveActivity(), platformError('PLATFORM_NOT_SUPPORTED'));
     await expectLater(Pushizo.Notifications.removeNotification(1), platformError('PLATFORM_NOT_SUPPORTED'));
     expect(sdk.calls.first, ['init', {
       'appId': 'app_1',
-      'apiUrl': 'https://api.example.com',
+      'apiUrl': 'https://api.pushizo.com',
       'requiresPrivacyConsent': false,
       'logLevel': 'warn',
       'allowLocalhostAsSecureOrigin': true,
     }]);
     expect(sdk.calls[1], ['login', 'u1', null, 'h.p.s']);
-    expect(sdk.calls.last, ['setLocationShared', true]);
+    expect(sdk.calls.last, ['placementsReport', 'reportImpression', '{"id":"m1","priority":1,"display":{"layout":"modal","blocks":[]}}', null]);
   });
 
   test('webErrorCode ve webLogLevel', () {
@@ -427,8 +813,11 @@ class FakeWebSdk implements WebSdkFacade {
   void Function(bool)? _permission;
   void Function(Map<Object?, Object?>)? _inAppClick;
   void Function(String, String)? _inAppLifecycle;
+  void Function()? _featureFlags;
+  void Function(Map<Object?, Object?>)? _inbox;
 
-  int get listenerCount => [_click, _foreground, _subscription, _permission, _inAppClick, _inAppLifecycle].nonNulls.length;
+  int get listenerCount =>
+      [_click, _foreground, _subscription, _permission, _inAppClick, _inAppLifecycle, _featureFlags, _inbox].nonNulls.length;
 
   Future<T> _record<T>(String method, [List<Object?> args = const []]) async {
     calls.add([method, ...args]);
@@ -443,6 +832,8 @@ class FakeWebSdk implements WebSdkFacade {
   void permission(bool granted) => _permission!(granted);
   void inAppClick(Map<Object?, Object?> e) => _inAppClick!(e);
   void inAppLifecycle(String event, String id) => _inAppLifecycle!(event, id);
+  void featureFlagsChanged() => _featureFlags!();
+  void inboxChanged(Map<Object?, Object?> e) => _inbox!(e);
 
   @override
   bool get isLoaded => loaded;
@@ -451,7 +842,8 @@ class FakeWebSdk implements WebSdkFacade {
   @override
   Future<void> setConsentGiven(bool given) => _record('setConsentGiven', [given]);
   @override
-  Future<void> login(String externalId, {String? identityHash, String? jwt}) => _record('login', [externalId, identityHash, jwt]);
+  Future<void> login(String externalId, {String? identityHash, String? jwt, Map<String, Object?>? profile}) =>
+      _record('login', [externalId, identityHash, jwt, ?profile]);
   @override
   Future<void> updateUserJwt(String jwt) => _record('updateUserJwt', [jwt]);
   @override
@@ -477,6 +869,8 @@ class FakeWebSdk implements WebSdkFacade {
   @override
   Future<void> setLanguage(String code) => _record('setLanguage', [code]);
   @override
+  Future<void> setProperty(String key, Object? value) => _record('setProperty', [key, value]);
+  @override
   Future<String?> externalId() => _record('externalId');
   @override
   Future<String?> userId() => _record('userId');
@@ -484,6 +878,8 @@ class FakeWebSdk implements WebSdkFacade {
   Future<Map<Object?, Object?>> getPreferences() async => (await _record<Map<Object?, Object?>?>('getPreferences')) ?? {};
   @override
   Future<void> setPreferences(List<Map<String, Object?>> preferences) => _record('setPreferences', [preferences]);
+  @override
+  Future<void> setAdsPersonalizationConsent(bool granted) => _record('setAdsPersonalizationConsent', [granted]);
   @override
   Future<Map<Object?, Object?>> pushSubscriptionState() async =>
       (await _record<Map<Object?, Object?>?>('pushSubscriptionState')) ?? {};
@@ -498,7 +894,10 @@ class FakeWebSdk implements WebSdkFacade {
   @override
   Future<void> clearAllNotifications() => _record('clearAllNotifications');
   @override
-  Future<void> sendEvent(String name, Map<String, Object?> properties, double? value) => _record('sendEvent', [name, properties, value]);
+  Future<bool> setBadgeCount(int count) async => (await _record<bool?>('setBadgeCount', [count])) ?? false;
+  @override
+  Future<void> sendEvent(String name, Map<String, Object?> properties, double? value, {String? eventId}) =>
+      _record('sendEvent', [name, properties, value, ?eventId]);
   @override
   Future<void> setLogLevel(String level) => _record('setLogLevel', [level]);
   @override
@@ -527,12 +926,50 @@ class FakeWebSdk implements WebSdkFacade {
   @override
   Future<num> inboxUnreadCount() async => (await _record<num?>('inboxUnreadCount')) ?? 0;
   @override
+  Future<Map<Object?, Object?>> contentCardsList({int? limit}) async => (await _record<Map<Object?, Object?>?>('contentCardsList', [limit])) ?? {};
+  @override
+  Future<Map<Object?, Object?>> contentCardEvent(String id, String event) async =>
+      (await _record<Map<Object?, Object?>?>('contentCardEvent', [id, event])) ?? {};
+  @override
   Future<void> setLocationShared(bool shared) => _record('setLocationShared', [shared]);
   @override
   Future<bool> locationShared() async => (await _record<bool?>('locationShared')) ?? false;
   @override
   Future<bool> requestLocationPermission(String? rationale) async =>
       (await _record<bool?>('requestLocationPermission', [rationale])) ?? false;
+  @override
+  Future<bool> locationPermissionGranted() async => (await _record<bool?>('locationPermissionGranted')) ?? false;
+  @override
+  Future<Map<Object?, Object?>> chatConfig(bool refresh) async =>
+      (await _record<Map<Object?, Object?>?>('chatConfig', [refresh])) ?? {};
+  @override
+  Future<Map<Object?, Object?>> chatConversation() async => (await _record<Map<Object?, Object?>?>('chatConversation')) ?? {};
+  @override
+  Future<num> chatUnreadCount() async => (await _record<num?>('chatUnreadCount')) ?? 0;
+  @override
+  Future<num> chatRefreshUnreadCount() async => (await _record<num?>('chatRefreshUnreadCount')) ?? 0;
+  @override
+  Future<void> chatSetTyping(bool typing) => _record('chatSetTyping', [typing]);
+  @override
+  Future<String> chatAttachmentUrl(String attachmentId, bool download) async =>
+      (await _record<String?>('chatAttachmentUrl', [attachmentId, download])) ?? '';
+  @override
+  Future<void> chatShow() => _record('chatShow');
+  @override
+  Future<void> chatHide() => _record('chatHide');
+  @override
+  Future<List<String>> placementsList(String key, int limit) async =>
+      (await _record<List<String>?>('placementsList', [key, limit])) ?? const [];
+  @override
+  Future<void> placementsReport(String method, String messageJson, String? buttonId) =>
+      _record('placementsReport', [method, messageJson, buttonId]);
+  @override
+  Future<bool> featureFlagsRefresh() async => (await _record<bool?>('featureFlagsRefresh')) ?? false;
+  @override
+  Future<bool> featureFlagEnabled(String key, bool defaultValue) async =>
+      (await _record<bool?>('featureFlagEnabled', [key, defaultValue])) ?? defaultValue;
+  @override
+  Future<String?> featureFlagValueJson(String key) => _record('featureFlagValueJson', [key]);
   @override
   void addClickListener(void Function(Map<Object?, Object?> event) listener) => _click = listener;
   @override
@@ -545,6 +982,10 @@ class FakeWebSdk implements WebSdkFacade {
   void addInAppClickListener(void Function(Map<Object?, Object?> event) listener) => _inAppClick = listener;
   @override
   void addInAppLifecycleListener(void Function(String event, String messageId) listener) => _inAppLifecycle = listener;
+  @override
+  void addFeatureFlagObserver(void Function() observer) => _featureFlags = observer;
+  @override
+  void addInboxObserver(void Function(Map<Object?, Object?> event) observer) => _inbox = observer;
 }
 
 class FakeForegroundEvent implements WebForegroundEvent {

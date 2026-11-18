@@ -11,23 +11,7 @@
 
 ## English
 
-**Pushizo Flutter SDK** — One Dart API for iOS, Android and the web: push notifications, in-app messages, notification inbox, users, tags and aliases, email and SMS subscriptions, preferences, live chat and Live Activities (iOS). Wraps the native Pushizo Android and iOS SDKs.
-
-> **Status:** Publishing to pub.dev is in progress.<br>
-> **Durum:** pub.dev yayını hazırlanıyor.
-
-**Install from GitHub until then · O zamana kadar GitHub'dan kurulum:**
-
-```yaml
-dependencies:
-  pushizo_flutter:
-    git:
-      url: https://github.com/pushizo/pushizo-flutter.git
-      path: pushizo_flutter
-      ref: v0.1.0
-```
-
-**After publication · Yayından sonra:**
+**Pushizo Flutter SDK** — One Dart API for iOS, Android and the web: push notifications, in-app messages, embedded placements, feature flags, notification inbox, users, tags and aliases, email and SMS subscriptions, preferences, live chat and Live Activities (iOS). Wraps the native Pushizo Android and iOS SDKs.
 
 ```bash
 flutter pub add pushizo_flutter
@@ -41,8 +25,8 @@ The detailed guide below is in Turkish; code samples are language-neutral. Full 
 
 # Pushizo Flutter SDK
 
-iOS, Android ve web için tek Dart API'si: push bildirimleri, in-app mesajlar, bildirim kutusu, kullanıcı/tag/alias,
-e-posta ve SMS abonelikleri, kullanıcı tercihleri, canlı sohbet ve Live Activities (iOS).
+iOS, Android ve web için tek Dart API'si: push bildirimleri, in-app mesajlar, gömülü yerleşimler, özellik bayrakları,
+bildirim kutusu, kullanıcı/tag/alias, e-posta ve SMS abonelikleri, kullanıcı tercihleri, canlı sohbet ve Live Activities (iOS).
 
 Paket [`pushizo_flutter/`](pushizo_flutter) dizinindedir ve pub.dev'de `pushizo_flutter` adıyla yayımlanır.
 
